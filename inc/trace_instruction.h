@@ -41,11 +41,16 @@ struct input_instr {
   unsigned char is_branch;
   unsigned char branch_taken;
 
+  // memory object info
+  unsigned char is_malloc;
+  unsigned char malloc_type; // 0: malloc, 1: calloc, 2: realloc, 3: free
+
   unsigned char destination_registers[NUM_INSTR_DESTINATIONS]; // output registers
   unsigned char source_registers[NUM_INSTR_SOURCES];           // input registers
 
-  unsigned long long destination_memory[NUM_INSTR_DESTINATIONS]; // output memory
-  unsigned long long source_memory[NUM_INSTR_SOURCES];           // input memory
+  unsigned long long destination_memory[NUM_INSTR_DESTINATIONS]; // output memory; for malloc, this is return value
+  unsigned long long source_memory[NUM_INSTR_SOURCES];           // input memory; for malloc/calloc/realloc, [0] is the size argument; for free, [0] is the pointer argument
+                                                                 //               for realloc, [1] is the pointer argument
 };
 
 struct cloudsuite_instr {
@@ -56,11 +61,16 @@ struct cloudsuite_instr {
   unsigned char is_branch;
   unsigned char branch_taken;
 
+  // memory object info
+  unsigned char is_malloc;
+  unsigned char malloc_type; // 0: malloc, 1: calloc, 2: realloc, 3: free
+
   unsigned char destination_registers[NUM_INSTR_DESTINATIONS_SPARC]; // output registers
   unsigned char source_registers[NUM_INSTR_SOURCES];                 // input registers
 
-  unsigned long long destination_memory[NUM_INSTR_DESTINATIONS_SPARC]; // output memory
-  unsigned long long source_memory[NUM_INSTR_SOURCES];                 // input memory
+  unsigned long long destination_memory[NUM_INSTR_DESTINATIONS_SPARC]; // output memory; for malloc, this is return value
+  unsigned long long source_memory[NUM_INSTR_SOURCES];                 // input memory; for malloc/calloc/realloc, [0] is the size argument; for free, [0] is the pointer argument
+                                                                       //               for realloc, [1] is the pointer argument
 
   unsigned char asid[2];
 };

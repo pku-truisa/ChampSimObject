@@ -30,3 +30,6 @@ compile_commands.json
 
 .vscode/
 **/.DS_Store
+tracer/pin/champsim_tracer.cpp
+tracer/pin/malloc.trace
+tracer/pin/champsim.trace

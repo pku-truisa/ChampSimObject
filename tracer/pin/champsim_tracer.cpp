@@ -24,6 +24,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <string>
+#include <vector>
 
 #include "../../inc/trace_instruction.h"
 #include "pin.H"
@@ -37,6 +38,8 @@ using trace_instr_format_t = input_instr;
 UINT64 instrCount = 0;
 
 std::ofstream outfile;
+std::ofstream malloc_outfile;
+std::vector<trace_instr_format_t> malloc_traces;
 
 trace_instr_format_t curr_instr;
 
@@ -45,9 +48,11 @@ trace_instr_format_t curr_instr;
 /* ===================================================================== */
 KNOB<std::string> KnobOutputFile(KNOB_MODE_WRITEONCE, "pintool", "o", "champsim.trace", "specify file name for Champsim tracer output");
 
+KNOB<std::string> KnobMallocOutputFile(KNOB_MODE_WRITEONCE, "pintool", "m", "malloc.trace", "specify file name for malloc trace output");
+
 KNOB<UINT64> KnobSkipInstructions(KNOB_MODE_WRITEONCE, "pintool", "s", "0", "How many instructions to skip before tracing begins");
 
-KNOB<UINT64> KnobTraceInstructions(KNOB_MODE_WRITEONCE, "pintool", "t", "1000000", "How many instructions to trace");
+KNOB<UINT64> KnobTraceInstructions(KNOB_MODE_WRITEONCE, "pintool", "t", "0", "How many instructions to trace (0 for unlimited)");
 
 /* ===================================================================== */
 // Utilities
@@ -73,6 +78,92 @@ INT32 Usage()
 // Analysis routines
 /* ===================================================================== */
 
+void WriteTrace(const trace_instr_format_t& instr)
+{
+  typename decltype(outfile)::char_type buf[sizeof(trace_instr_format_t)];
+  std::memcpy(buf, &instr, sizeof(trace_instr_format_t));
+  outfile.write(buf, sizeof(trace_instr_format_t));
+}
+
+// Malloc tracking functions
+VOID MallocBefore(ADDRINT size, ADDRINT ip)
+{
+  malloc_outfile << "MALLOC " << size << std::endl;
+  trace_instr_format_t instr = {};
+  instr.ip = (unsigned long long int)ip;
+  instr.is_malloc = 1;
+  instr.malloc_type = 0;
+  instr.source_memory[0] = size;
+  malloc_traces.push_back(instr);
+}
+
+VOID MallocAfter(ADDRINT ret)
+{
+  malloc_outfile << "MALLOC_RET " << ret << std::endl;
+  if (!malloc_traces.empty()) {
+    trace_instr_format_t instr = malloc_traces.back();
+    instr.destination_memory[0] = ret;
+    WriteTrace(instr);
+    malloc_traces.pop_back();
+  }
+}
+
+VOID FreeBefore(ADDRINT ptr, ADDRINT ip)
+{
+  malloc_outfile << "FREE " << ptr << std::endl;
+  trace_instr_format_t instr = {};
+  instr.ip = (unsigned long long int)ip;
+  instr.is_malloc = 1;
+  instr.malloc_type = 3;
+  instr.source_memory[0] = ptr;
+  WriteTrace(instr);
+}
+
+VOID CallocBefore(ADDRINT nmemb, ADDRINT size, ADDRINT ip)
+{
+  malloc_outfile << "CALLOC " << nmemb << " " << size << std::endl;
+  trace_instr_format_t instr = {};
+  instr.ip = (unsigned long long int)ip;
+  instr.is_malloc = 1;
+  instr.malloc_type = 1;
+  instr.source_memory[0] = nmemb * size;
+  malloc_traces.push_back(instr);
+}
+
+VOID CallocAfter(ADDRINT ret)
+{
+  malloc_outfile << "CALLOC_RET " << ret << std::endl;
+  if (!malloc_traces.empty()) {
+    trace_instr_format_t instr = malloc_traces.back();
+    instr.destination_memory[0] = ret;
+    WriteTrace(instr);
+    malloc_traces.pop_back();
+  }
+}
+
+VOID ReallocBefore(ADDRINT ptr, ADDRINT size, ADDRINT ip)
+{
+  malloc_outfile << "REALLOC " << ptr << " " << size << std::endl;
+  trace_instr_format_t instr = {};
+  instr.ip = (unsigned long long int)ip;
+  instr.is_malloc = 1;
+  instr.malloc_type = 2;
+  instr.source_memory[0] = size;
+  instr.source_memory[1] = ptr;
+  malloc_traces.push_back(instr);
+}
+
+VOID ReallocAfter(ADDRINT ret)
+{
+  malloc_outfile << "REALLOC_RET " << ret << std::endl;
+  if (!malloc_traces.empty()) {
+    trace_instr_format_t instr = malloc_traces.back();
+    instr.destination_memory[0] = ret;
+    WriteTrace(instr);
+    malloc_traces.pop_back();
+  }
+}
+
 void ResetCurrentInstruction(VOID* ip)
 {
   curr_instr = {};
@@ -82,6 +173,9 @@ void ResetCurrentInstruction(VOID* ip)
 BOOL ShouldWrite()
 {
   ++instrCount;
+  if (KnobTraceInstructions.Value() == 0) {
+    return instrCount > KnobSkipInstructions.Value();
+  }
   return (instrCount > KnobSkipInstructions.Value()) && (instrCount <= (KnobTraceInstructions.Value() + KnobSkipInstructions.Value()));
 }
 
@@ -109,6 +203,49 @@ void WriteToSet(T* begin, T* end, UINT32 r)
 /* ===================================================================== */
 // Instrumentation callbacks
 /* ===================================================================== */
+
+// RTN instrumentation for malloc/free/calloc/realloc
+VOID ImageLoad(IMG img, VOID* v)
+{
+  RTN rtn = RTN_FindByName(img, "malloc");
+  if (!RTN_Valid(rtn))
+    rtn = RTN_FindByName(img, "__libc_malloc");
+  if (RTN_Valid(rtn)) {
+    RTN_Open(rtn);
+    RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)MallocBefore, IARG_FUNCARG_ENTRYPOINT_VALUE, 0, IARG_INST_PTR, IARG_END);
+    RTN_InsertCall(rtn, IPOINT_AFTER, (AFUNPTR)MallocAfter, IARG_FUNCRET_EXITPOINT_VALUE, IARG_END);
+    RTN_Close(rtn);
+  }
+
+  rtn = RTN_FindByName(img, "free");
+  if (!RTN_Valid(rtn))
+    rtn = RTN_FindByName(img, "__libc_free");
+  if (RTN_Valid(rtn)) {
+    RTN_Open(rtn);
+    RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)FreeBefore, IARG_FUNCARG_ENTRYPOINT_VALUE, 0, IARG_INST_PTR, IARG_END);
+    RTN_Close(rtn);
+  }
+
+  rtn = RTN_FindByName(img, "calloc");
+  if (!RTN_Valid(rtn))
+    rtn = RTN_FindByName(img, "__libc_calloc");
+  if (RTN_Valid(rtn)) {
+    RTN_Open(rtn);
+    RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)CallocBefore, IARG_FUNCARG_ENTRYPOINT_VALUE, 0, IARG_FUNCARG_ENTRYPOINT_VALUE, 1, IARG_INST_PTR, IARG_END);
+    RTN_InsertCall(rtn, IPOINT_AFTER, (AFUNPTR)CallocAfter, IARG_FUNCRET_EXITPOINT_VALUE, IARG_END);
+    RTN_Close(rtn);
+  }
+
+  rtn = RTN_FindByName(img, "realloc");
+  if (!RTN_Valid(rtn))
+    rtn = RTN_FindByName(img, "__libc_realloc");
+  if (RTN_Valid(rtn)) {
+    RTN_Open(rtn);
+    RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)ReallocBefore, IARG_FUNCARG_ENTRYPOINT_VALUE, 0, IARG_FUNCARG_ENTRYPOINT_VALUE, 1, IARG_INST_PTR, IARG_END);
+    RTN_InsertCall(rtn, IPOINT_AFTER, (AFUNPTR)ReallocAfter, IARG_FUNCRET_EXITPOINT_VALUE, IARG_END);
+    RTN_Close(rtn);
+  }
+}
 
 // Is called for every instruction and instruments reads and writes
 VOID Instruction(INS ins, VOID* v)
@@ -161,7 +298,10 @@ VOID Instruction(INS ins, VOID* v)
  * @param[in]   v               value specified by the tool in the
  *                              PIN_AddFiniFunction function call
  */
-VOID Fini(INT32 code, VOID* v) { outfile.close(); }
+VOID Fini(INT32 code, VOID* v) {
+  outfile.close();
+  malloc_outfile.close();
+}
 
 /*!
  * The main procedure of the tool.
@@ -174,6 +314,7 @@ int main(int argc, char* argv[])
 {
   // Initialize PIN library. Print help message if -h(elp) is specified
   // in the command line or the command line is invalid
+  PIN_InitSymbols();
   if (PIN_Init(argc, argv))
     return Usage();
 
@@ -183,8 +324,17 @@ int main(int argc, char* argv[])
     exit(1);
   }
 
+  malloc_outfile.open(KnobMallocOutputFile.Value().c_str(), std::ios_base::out);
+  if (!malloc_outfile) {
+    std::cout << "Couldn't open malloc trace file. Exiting." << std::endl;
+    exit(1);
+  }
+
   // Register function to be called to instrument instructions
   INS_AddInstrumentFunction(Instruction, 0);
+
+  // Register image load callback to instrument malloc/free/calloc/realloc
+  IMG_AddInstrumentFunction(ImageLoad, 0);
 
   // Register function to be called when the application exits
   PIN_AddFiniFunction(Fini, 0);
