@@ -12,6 +12,7 @@ bin/
 test/000-test-main
 
 tracer/pin/obj-intel64/
+tracer/pin/*.trace
 
 vcpkg_installed/
 
@@ -30,6 +31,3 @@ compile_commands.json
 
 .vscode/
 **/.DS_Store
-tracer/pin/champsim_tracer.cpp
-tracer/pin/malloc.trace
-tracer/pin/champsim.trace
