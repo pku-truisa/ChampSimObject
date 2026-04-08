@@ -1,6 +1,6 @@
 #include "memoryobject.h"
 
-#include <deque>
+#include <vector>
 #include <map>
 
 namespace champsim
@@ -9,17 +9,25 @@ namespace champsim
 uint64_t next_memory_object_id = 0;
 
 // Global data structures definitions
-std::deque<MemoryObject> all_objects;
-std::map<champsim::address, MemoryObject*> address_to_object;
+std::vector<MemoryObject> all_objects;
+std::map<champsim::address, ActiveObject*> address_to_object;
 
 // Function to add a memory object
 void add_memory_object(MemoryObject obj) {
   all_objects.push_back(std::move(obj));
-  address_to_object[all_objects.back().start_address] = &all_objects.back();
+  
+  // Create an ActiveObject using the constructor
+  auto* active_obj = new ActiveObject(
+      all_objects.back().object_id,
+      all_objects.back().start_address,
+      all_objects.back().size
+  );
+  
+  address_to_object[all_objects.back().start_address] = active_obj;
 }
 
 // Function to find a memory object by address
-MemoryObject* find_memory_object(champsim::address addr) {
+ActiveObject* find_memory_object(champsim::address addr) {
   auto upper = address_to_object.upper_bound(addr);
   if (upper == address_to_object.begin()) {
     return nullptr;

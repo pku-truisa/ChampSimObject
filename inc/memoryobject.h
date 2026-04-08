@@ -18,7 +18,7 @@
 #define MEMORYOBJECT_H
 
 #include <array>
-#include <deque>
+#include <vector>
 #include <string>
 #include <unordered_map>
 #include <cstdint>
@@ -138,16 +138,41 @@ struct MemoryObject {
   const std::unordered_map<std::string, CacheLevelStats>& get_cache_stats_by_level() const { return cache_stats_by_level; }
 };
 
+struct ActiveObject {
+  using id_type = uint64_t;
+  id_type object_id = 0;
+
+  champsim::address start_address{};
+  std::size_t size = 0;
+
+  // Default constructor
+  ActiveObject() = default;
+
+  // Constructor with parameters
+  ActiveObject(id_type id, champsim::address addr, std::size_t sz)
+      : object_id(id), start_address(addr), size(sz) {}
+
+  // Get the end address of this object
+  [[nodiscard]] champsim::address end_address() const {
+    return start_address + champsim::address{size};
+  }
+
+  // Check if an address belongs to this object
+  [[nodiscard]] bool contains_address(champsim::address addr) const {
+    return addr >= start_address && addr < end_address();
+  }
+};
+
 // Global data structures
-extern std::deque<MemoryObject> all_objects;
-extern std::map<champsim::address, MemoryObject*> address_to_object;
+extern std::vector<MemoryObject> all_objects;
+extern std::map<champsim::address, ActiveObject*> address_to_object;
 
 // Global ID counter for memory objects
 extern uint64_t next_memory_object_id;
 
 // Functions to manage objects
 void add_memory_object(MemoryObject obj);
-MemoryObject* find_memory_object(champsim::address addr);
+ActiveObject* find_memory_object(champsim::address addr);
 }
 
 #endif
