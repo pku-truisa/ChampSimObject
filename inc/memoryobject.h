@@ -36,6 +36,7 @@ struct MemoryObject {
   champsim::address start_address{};
   std::size_t size = 0;
   champsim::chrono::clock::time_point allocation_time{};
+  champsim::address first_access_ip{};
 
   // Total memory accesses associated with this object.
   uint64_t total_accesses = 0;
@@ -77,7 +78,7 @@ struct MemoryObject {
   }
 
   // Update object-level access statistics.
-  void record_access(access_type type, bool hit, uint64_t latency = 0) {
+  void record_access(access_type type, bool hit, uint64_t latency = 0, champsim::address ip = {}) {
     const auto index = static_cast<std::size_t>(type);
     ++total_accesses;
     ++accesses[index];
@@ -86,6 +87,10 @@ struct MemoryObject {
     } else {
       ++misses[index];
       total_miss_latency_cycles += latency;
+    }
+    // Record the first access IP if not already recorded
+    if (first_access_ip == champsim::address{}) {
+      first_access_ip = ip;
     }
   }
 
@@ -136,6 +141,7 @@ struct MemoryObject {
   uint64_t get_pf_useless() const { return pf_useless; }
   uint64_t get_pf_fill() const { return pf_fill; }
   const std::unordered_map<std::string, CacheLevelStats>& get_cache_stats_by_level() const { return cache_stats_by_level; }
+  champsim::address get_first_access_ip() const { return first_access_ip; }
 };
 
 struct ActiveObject {
