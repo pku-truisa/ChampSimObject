@@ -26,6 +26,7 @@
 
 #include "instruction.h"
 #include "util/detect.h"
+#include "memoryobject.h"
 
 namespace champsim
 {
@@ -126,10 +127,58 @@ ooo_model_instr bulk_tracereader<T, F>::operator()()
     // Inflate trace format into core model instructions
     auto begin = std::begin(trace_read_buf);
     auto end = std::next(begin, bytes_read / sizeof(T));
-    std::transform(begin, end, std::back_inserter(instr_buffer), [cpu = this->cpu](T t) { return ooo_model_instr{cpu, t}; });
+    
+    // Process each instruction - handle malloc/free separately
+    for (auto it = begin; it != end; ++it) {
+      T& t = *it;
+      
+      // Check if this is a malloc/free instruction
+      if (t.is_malloc) {
+        if (t.malloc_type == 3) { // free
+          // Delete the memory object (only if source_memory[0] is valid)
+          if (t.source_memory[0] != 0) {
+            champsim::delete_memory_object(champsim::address{t.source_memory[0]});
+          }
+        } else if (t.malloc_type == 2) { // realloc
+          // Delete the old memory object at source_memory[1] (only if valid)
+          if (t.source_memory[1] != 0) {
+            champsim::delete_memory_object(champsim::address{t.source_memory[1]});
+          }
+          // Create a new memory object (only if destination_memory[0] and source_memory[0] are valid)
+          if (t.destination_memory[0] != 0 && t.source_memory[0] != 0) {
+            champsim::MemoryObject obj(
+              champsim::next_memory_object_id++,
+              champsim::address{t.destination_memory[0]},
+              static_cast<std::size_t>(t.source_memory[0]),
+              champsim::chrono::clock::now()
+            );
+            champsim::add_memory_object(obj);
+          }
+        } else { // malloc, calloc
+          // Create a new memory object (only if destination_memory[0] and source_memory[0] are valid)
+          if (t.destination_memory[0] != 0 && t.source_memory[0] != 0) {
+            champsim::MemoryObject obj(
+              champsim::next_memory_object_id++,
+              champsim::address{t.destination_memory[0]},
+              static_cast<std::size_t>(t.source_memory[0]),
+              champsim::chrono::clock::now()
+            );
+            champsim::add_memory_object(obj);
+          }
+        }
+      } else {
+        // Normal instruction, add to buffer
+        instr_buffer.push_back(ooo_model_instr{cpu, t});
+      }
+    }
 
-    // Set branch targets
+    // Set branch targets for normal instructions
     set_branch_targets(std::begin(instr_buffer), std::end(instr_buffer));
+  }
+
+  // If buffer is empty (all instructions were malloc/free), return a dummy instruction
+  if (instr_buffer.empty()) {
+    return ooo_model_instr{cpu, T{}};
   }
 
   auto retval = instr_buffer.front();
