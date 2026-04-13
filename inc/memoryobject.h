@@ -173,6 +173,7 @@ extern uint64_t next_memory_object_id;
 // Functions to manage objects
 void add_memory_object(MemoryObject obj);
 ActiveObject* find_memory_object(champsim::address addr);
+void delete_memory_object(champsim::address addr);
 }
 
 #endif

@@ -41,4 +41,19 @@ ActiveObject* find_memory_object(champsim::address addr) {
   return nullptr;
 }
 
+// Function to delete a memory object by address
+void delete_memory_object(champsim::address addr) {
+  auto upper = address_to_object.upper_bound(addr);
+  if (upper == address_to_object.begin()) {
+    return; // No object found
+  }
+
+  auto it = std::prev(upper);
+  if (it->second && it->second->contains_address(addr)) {
+    // Delete only the ActiveObject and remove it from the map
+    delete it->second;
+    address_to_object.erase(it);
+  }
+}
+
 } // namespace champsim
