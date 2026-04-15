@@ -168,6 +168,7 @@ extern uint64_t next_memory_object_id;
 void add_memory_object(MemoryObject obj);
 MemoryObject* find_memory_object(champsim::address addr);
 void delete_memory_object(champsim::address addr);
+void flush_active_objects_stats();
 }
 
 #endif

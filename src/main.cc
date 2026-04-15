@@ -62,6 +62,7 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   long long warmup_instructions = 0;
   long long simulation_instructions = std::numeric_limits<long long>::max();
   std::string json_file_name;
+  std::string memoryobject_file_name;
   std::vector<std::string> trace_names;
 
   auto set_heartbeat_callback = [&](auto) {
@@ -82,6 +83,9 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
 
   auto* json_option =
       app.add_option("--json", json_file_name, "The name of the file to receive JSON output. If no name is specified, stdout will be used")->expected(0, 1);
+
+  auto* memoryobject_option =
+      app.add_option("--memoryobject", memoryobject_file_name, "The name of the file to receive memory object statistics output. If no name is specified, memory_objects.txt will be used")->expected(0, 1);
 
   app.add_option("traces", trace_names, "The paths to the traces")->required()->expected(NUM_CPUS)->check(CLI::ExistingFile);
 
@@ -124,7 +128,7 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
 
   fmt::print("\nChampSim completed all CPUs\n\n");
 
-  champsim::plain_printer{std::cout}.print(phase_stats);
+  champsim::plain_printer{std::cout}.print(phase_stats, memoryobject_file_name);
 
   for (CACHE& cache : gen_environment.cache_view()) {
     cache.impl_prefetcher_final_stats();
@@ -136,10 +140,10 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
 
   if (json_option->count() > 0) {
     if (json_file_name.empty()) {
-      champsim::json_printer{std::cout}.print(phase_stats);
+      champsim::json_printer{std::cout}.print(phase_stats, memoryobject_file_name);
     } else {
       std::ofstream json_file{json_file_name};
-      champsim::json_printer{json_file}.print(phase_stats);
+      champsim::json_printer{json_file}.print(phase_stats, memoryobject_file_name);
     }
   }
 

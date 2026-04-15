@@ -19,6 +19,7 @@
 #include <nlohmann/json.hpp>
 
 #include "stats_printer.h"
+#include "memoryobject.h"
 
 void to_json(nlohmann::json& j, const O3_CPU::stats_type& stats)
 {
@@ -109,4 +110,12 @@ void to_json(nlohmann::json& j, const champsim::phase_stats stats)
 }
 } // namespace champsim
 
-void champsim::json_printer::print(std::vector<phase_stats>& stats) { stream << nlohmann::json::array_t{std::begin(stats), std::end(stats)}; }
+void champsim::json_printer::print(std::vector<phase_stats>& stats, const std::string& memoryobject_file_name) {
+  // Flush statistics from all active objects to their corresponding entries in all_objects
+  champsim::flush_active_objects_stats();
+
+  // Print memory object statistics to file
+  champsim::memoryobject_printer::print(champsim::all_objects, memoryobject_file_name);
+
+  stream << nlohmann::json::array_t{std::begin(stats), std::end(stats)};
+}

@@ -25,6 +25,7 @@
 #include <fmt/ostream.h>
 
 #include "stats_printer.h"
+#include "memoryobject.h"
 
 namespace
 {
@@ -145,8 +146,14 @@ std::vector<std::string> champsim::plain_printer::format(DRAM_CHANNEL::stats_typ
   return lines;
 }
 
-void champsim::plain_printer::print(champsim::phase_stats& stats)
+void champsim::plain_printer::print(champsim::phase_stats& stats, const std::string& memoryobject_file_name)
 {
+  // Flush statistics from all active objects to their corresponding entries in all_objects
+  champsim::flush_active_objects_stats();
+
+  // Print memory object statistics to file
+  champsim::memoryobject_printer::print(champsim::all_objects, memoryobject_file_name);
+
   auto lines = format(stats);
   std::copy(std::begin(lines), std::end(lines), std::ostream_iterator<std::string>(stream, "\n"));
 }

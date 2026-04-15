@@ -28,8 +28,7 @@ struct MemoryObject;
 class memoryobject_printer
 {
 public:
-  explicit memoryobject_printer(std::string_view filename);
-  void print(const std::vector<MemoryObject>& objects);
+  static void print(const std::vector<MemoryObject>& objects, std::string_view filename = "memory_objects.txt");
 
 private:
   std::string m_filename;
