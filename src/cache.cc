@@ -225,10 +225,22 @@ bool CACHE::handle_fill(const mshr_type& fill_mshr)
   if (way != set_end) {
     if (way->valid && way->prefetch) {
       ++sim_stats.pf_useless;
+      
+      // Update MemoryObject statistics
+      if (auto* mem_obj = champsim::find_memory_object(fill_mshr.address)) {
+        mem_obj->record_cache_level_prefetch_useless(NAME);
+        mem_obj->record_prefetch_useless();
+      }
     }
 
     if (fill_mshr.type == access_type::PREFETCH) {
       ++sim_stats.pf_fill;
+      
+      // Update MemoryObject statistics
+      if (auto* mem_obj = champsim::find_memory_object(fill_mshr.address)) {
+        mem_obj->record_cache_level_prefetch_fill(NAME);
+        mem_obj->record_prefetch_fill();
+      }
     }
 
     *way = fill_block(fill_mshr, metadata_thru);
@@ -238,6 +250,12 @@ bool CACHE::handle_fill(const mshr_type& fill_mshr)
   if (fill_mshr.type != access_type::PREFETCH)
     sim_stats.total_miss_latency_cycles += (current_time - (fill_mshr.time_enqueued + clock_period)) / clock_period;
   sim_stats.mshr_return.increment(std::pair{fill_mshr.type, fill_mshr.cpu});
+  
+  // Update MemoryObject statistics
+  if (auto* mem_obj = champsim::find_memory_object(fill_mshr.address)) {
+    mem_obj->record_cache_level_mshr_return(NAME);
+    mem_obj->record_mshr_return();
+  }
 
   response_type response{fill_mshr.address, fill_mshr.v_address, fill_mshr.data_promise->data, metadata_thru, fill_mshr.instr_depend_on_me};
   for (auto* ret : fill_mshr.to_return) {
@@ -275,6 +293,12 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
 
   if (hit) {
     sim_stats.hits.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
+    
+    // Update MemoryObject statistics
+    if (auto* mem_obj = champsim::find_memory_object(handle_pkt.address)) {
+      mem_obj->record_cache_level_access(NAME, handle_pkt.type, true);
+      mem_obj->record_access(handle_pkt.type, true, 0, handle_pkt.ip);
+    }
 
     response_type response{handle_pkt.address, handle_pkt.v_address, way->data, metadata_thru, handle_pkt.instr_depend_on_me};
     for (auto* ret : handle_pkt.to_return) {
@@ -287,6 +311,12 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
     if (useful_prefetch) {
       ++sim_stats.pf_useful;
       way->prefetch = false;
+      
+      // Update MemoryObject statistics
+      if (auto* mem_obj = champsim::find_memory_object(handle_pkt.address)) {
+        mem_obj->record_cache_level_prefetch_useful(NAME);
+        mem_obj->record_prefetch_useful();
+      }
     }
   }
 
@@ -341,11 +371,23 @@ bool CACHE::handle_miss(const tag_lookup_type& handle_pkt)
       // Mark the prefetch as useful
       if (mshr_entry->prefetch_from_this) {
         ++sim_stats.pf_useful;
+        
+        // Update MemoryObject statistics
+        if (auto* mem_obj = champsim::find_memory_object(handle_pkt.address)) {
+          mem_obj->record_cache_level_prefetch_useful(NAME);
+          mem_obj->record_prefetch_useful();
+        }
       }
     }
 
     // COLLECT STATS
     sim_stats.mshr_merge.increment(std::pair{to_allocate.type, to_allocate.cpu});
+    
+    // Update MemoryObject statistics
+    if (auto* mem_obj = champsim::find_memory_object(handle_pkt.address)) {
+      mem_obj->record_cache_level_mshr_merge(NAME);
+      mem_obj->record_mshr_merge();
+    }
 
     *mshr_entry = mshr_type::merge(*mshr_entry, to_allocate);
   } else {
@@ -367,6 +409,12 @@ bool CACHE::handle_miss(const tag_lookup_type& handle_pkt)
   }
 
   sim_stats.misses.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
+  
+  // Update MemoryObject statistics
+  if (auto* mem_obj = champsim::find_memory_object(handle_pkt.address)) {
+    mem_obj->record_cache_level_access(NAME, handle_pkt.type, false);
+    mem_obj->record_access(handle_pkt.type, false, 0, handle_pkt.ip);
+  }
 
   return true;
 }
@@ -384,6 +432,12 @@ bool CACHE::handle_write(const tag_lookup_type& handle_pkt)
   inflight_writes.push_back(to_allocate);
 
   sim_stats.misses.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
+  
+  // Update MemoryObject statistics
+  if (auto* mem_obj = champsim::find_memory_object(handle_pkt.address)) {
+    mem_obj->record_cache_level_access(NAME, handle_pkt.type, false);
+    mem_obj->record_access(handle_pkt.type, false, 0, handle_pkt.ip);
+  }
 
   return true;
 }
@@ -576,6 +630,12 @@ long CACHE::invalidate_entry(champsim::address inval_addr)
 bool CACHE::prefetch_line(champsim::address pf_addr, bool fill_this_level, uint32_t prefetch_metadata)
 {
   ++sim_stats.pf_requested;
+  
+  // Update MemoryObject statistics
+  if (auto* mem_obj = champsim::find_memory_object(pf_addr)) {
+    mem_obj->record_cache_level_prefetch_request(NAME);
+    mem_obj->record_prefetch_request();
+  }
 
   if (std::size(internal_PQ) >= PQ_SIZE) {
     return false;
@@ -591,6 +651,12 @@ bool CACHE::prefetch_line(champsim::address pf_addr, bool fill_this_level, uint3
 
   internal_PQ.emplace_back(pf_packet, true, !fill_this_level);
   ++sim_stats.pf_issued;
+  
+  // Update MemoryObject statistics
+  if (auto* mem_obj = champsim::find_memory_object(pf_addr)) {
+    mem_obj->record_cache_level_prefetch_issue(NAME);
+    mem_obj->record_prefetch_issue();
+  }
 
   return true;
 }

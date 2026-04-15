@@ -49,6 +49,10 @@ struct MemoryObject {
   uint64_t pf_useful = 0;
   uint64_t pf_useless = 0;
   uint64_t pf_fill = 0;
+  
+  // MSHR statistics
+  uint64_t mshr_merge = 0;
+  uint64_t mshr_return = 0;
 
   // Per-cache-level statistics keyed by cache instance name.
   struct CacheLevelStats {
@@ -62,6 +66,10 @@ struct MemoryObject {
     uint64_t pf_useful = 0;
     uint64_t pf_useless = 0;
     uint64_t pf_fill = 0;
+    
+    // MSHR statistics
+    uint64_t mshr_merge = 0;
+    uint64_t mshr_return = 0;
   };
 
   std::unordered_map<std::string, CacheLevelStats> cache_stats_by_level;
@@ -120,12 +128,16 @@ struct MemoryObject {
   void record_cache_level_prefetch_useful(const std::string& cache_name) { ++level_stats(cache_name).pf_useful; }
   void record_cache_level_prefetch_useless(const std::string& cache_name) { ++level_stats(cache_name).pf_useless; }
   void record_cache_level_prefetch_fill(const std::string& cache_name) { ++level_stats(cache_name).pf_fill; }
+  void record_cache_level_mshr_merge(const std::string& cache_name) { ++level_stats(cache_name).mshr_merge; }
+  void record_cache_level_mshr_return(const std::string& cache_name) { ++level_stats(cache_name).mshr_return; }
 
   void record_prefetch_request() { ++pf_requested; }
   void record_prefetch_issue() { ++pf_issued; }
   void record_prefetch_useful() { ++pf_useful; }
   void record_prefetch_useless() { ++pf_useless; }
   void record_prefetch_fill() { ++pf_fill; }
+  void record_mshr_merge() { ++mshr_merge; }
+  void record_mshr_return() { ++mshr_return; }
 
   // Get object statistics
   uint64_t get_total_accesses() const { return total_accesses; }
@@ -138,6 +150,8 @@ struct MemoryObject {
   uint64_t get_pf_useful() const { return pf_useful; }
   uint64_t get_pf_useless() const { return pf_useless; }
   uint64_t get_pf_fill() const { return pf_fill; }
+  uint64_t get_mshr_merge() const { return mshr_merge; }
+  uint64_t get_mshr_return() const { return mshr_return; }
   const std::unordered_map<std::string, CacheLevelStats>& get_cache_stats_by_level() const { return cache_stats_by_level; }
   champsim::address get_first_access_ip() const { return first_access_ip; }
 };

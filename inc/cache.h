@@ -42,6 +42,7 @@
 #include "champsim.h"
 #include "channel.h"
 #include "chrono.h"
+#include "memoryobject.h"
 #include "modules.h"
 #include "operable.h"
 #include "util/to_underlying.h" // for to_underlying
