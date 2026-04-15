@@ -25,7 +25,6 @@
 
 #include "access_type.h"
 #include "address.h"
-#include "chrono.h"
 
 namespace champsim
 {
@@ -35,7 +34,6 @@ struct MemoryObject {
 
   champsim::address start_address{};
   std::size_t size = 0;
-  champsim::chrono::clock::time_point allocation_time{};
   champsim::address first_access_ip{};
 
   // Total memory accesses associated with this object.
@@ -69,8 +67,8 @@ struct MemoryObject {
   std::unordered_map<std::string, CacheLevelStats> cache_stats_by_level;
 
   // Constructor
-  MemoryObject(id_type id, champsim::address addr, std::size_t sz, champsim::chrono::clock::time_point time)
-      : object_id(id), start_address(addr), size(sz), allocation_time(time) {}
+  MemoryObject(id_type id, champsim::address addr, std::size_t sz)
+      : object_id(id), start_address(addr), size(sz) {}
 
   // Check if an address belongs to this object.
   [[nodiscard]] bool contains_address(champsim::address addr) const {
@@ -144,41 +142,17 @@ struct MemoryObject {
   champsim::address get_first_access_ip() const { return first_access_ip; }
 };
 
-struct ActiveObject {
-  using id_type = uint64_t;
-  id_type object_id = 0;
-
-  champsim::address start_address{};
-  std::size_t size = 0;
-
-  // Default constructor
-  ActiveObject() = default;
-
-  // Constructor with parameters
-  ActiveObject(id_type id, champsim::address addr, std::size_t sz)
-      : object_id(id), start_address(addr), size(sz) {}
-
-  // Get the end address of this object
-  [[nodiscard]] champsim::address end_address() const {
-    return start_address + champsim::address{size};
-  }
-
-  // Check if an address belongs to this object
-  [[nodiscard]] bool contains_address(champsim::address addr) const {
-    return addr >= start_address && addr < end_address();
-  }
-};
 
 // Global data structures
 extern std::vector<MemoryObject> all_objects;
-extern std::map<champsim::address, ActiveObject*> address_to_object;
+extern std::map<champsim::address, MemoryObject*> active_objects;
 
 // Global ID counter for memory objects
 extern uint64_t next_memory_object_id;
 
 // Functions to manage objects
 void add_memory_object(MemoryObject obj);
-ActiveObject* find_memory_object(champsim::address addr);
+MemoryObject* find_memory_object(champsim::address addr);
 void delete_memory_object(champsim::address addr);
 }
 

@@ -149,8 +149,7 @@ ooo_model_instr bulk_tracereader<T, F>::operator()()
             champsim::MemoryObject obj(
               champsim::next_memory_object_id++,
               champsim::address{t.destination_memory[0]},
-              static_cast<std::size_t>(t.source_memory[0]),
-              champsim::chrono::clock::now()
+              static_cast<std::size_t>(t.source_memory[0])
             );
             champsim::add_memory_object(obj);
           }
@@ -160,8 +159,7 @@ ooo_model_instr bulk_tracereader<T, F>::operator()()
             champsim::MemoryObject obj(
               champsim::next_memory_object_id++,
               champsim::address{t.destination_memory[0]},
-              static_cast<std::size_t>(t.source_memory[0]),
-              champsim::chrono::clock::now()
+              static_cast<std::size_t>(t.source_memory[0])
             );
             champsim::add_memory_object(obj);
           }

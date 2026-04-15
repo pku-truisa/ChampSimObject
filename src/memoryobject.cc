@@ -10,26 +10,21 @@ uint64_t next_memory_object_id = 0;
 
 // Global data structures definitions
 std::vector<MemoryObject> all_objects;
-std::map<champsim::address, ActiveObject*> address_to_object;
+std::map<champsim::address, MemoryObject*> active_objects;
 
 // Function to add a memory object
 void add_memory_object(MemoryObject obj) {
   all_objects.push_back(std::move(obj));
   
-  // Create an ActiveObject using the constructor
-  auto* active_obj = new ActiveObject(
-      all_objects.back().object_id,
-      all_objects.back().start_address,
-      all_objects.back().size
-  );
+  // Use the MemoryObject pointer directly
   
-  address_to_object[all_objects.back().start_address] = active_obj;
+  active_objects[all_objects.back().start_address] = &all_objects.back();
 }
 
 // Function to find a memory object by address
-ActiveObject* find_memory_object(champsim::address addr) {
-  auto upper = address_to_object.upper_bound(addr);
-  if (upper == address_to_object.begin()) {
+MemoryObject* find_memory_object(champsim::address addr) {
+  auto upper = active_objects.upper_bound(addr);
+  if (upper == active_objects.begin()) {
     return nullptr;
   }
 
@@ -43,16 +38,15 @@ ActiveObject* find_memory_object(champsim::address addr) {
 
 // Function to delete a memory object by address
 void delete_memory_object(champsim::address addr) {
-  auto upper = address_to_object.upper_bound(addr);
-  if (upper == address_to_object.begin()) {
+  auto upper = active_objects.upper_bound(addr);
+  if (upper == active_objects.begin()) {
     return; // No object found
   }
 
   auto it = std::prev(upper);
   if (it->second && it->second->contains_address(addr)) {
-    // Delete only the ActiveObject and remove it from the map
-    delete it->second;
-    address_to_object.erase(it);
+    // Remove the object from the map
+    active_objects.erase(it);
   }
 }
 
