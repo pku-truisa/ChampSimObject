@@ -42,8 +42,7 @@ struct input_instr {
   unsigned char branch_taken;
 
   // memory object info
-  unsigned char is_malloc;
-  unsigned char malloc_type; // 0: malloc, 1: calloc, 2: realloc, 3: free
+  unsigned char is_malloc; // 0: is not object; 1: malloc, 2: calloc, 3: realloc, 4: free
 
   unsigned char destination_registers[NUM_INSTR_DESTINATIONS]; // output registers
   unsigned char source_registers[NUM_INSTR_SOURCES];           // input registers
@@ -62,8 +61,7 @@ struct cloudsuite_instr {
   unsigned char branch_taken;
 
   // memory object info
-  unsigned char is_malloc;
-  unsigned char malloc_type; // 0: malloc, 1: calloc, 2: realloc, 3: free
+  unsigned char is_malloc; // 0: is not object; 1: malloc, 2: calloc, 3: realloc, 4: free
 
   unsigned char destination_registers[NUM_INSTR_DESTINATIONS_SPARC]; // output registers
   unsigned char source_registers[NUM_INSTR_SOURCES];                 // input registers

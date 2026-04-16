@@ -134,12 +134,12 @@ ooo_model_instr bulk_tracereader<T, F>::operator()()
       
       // Check if this is a malloc/free instruction
       if (t.is_malloc) {
-        if (t.malloc_type == 3) { // free
+        if (t.is_malloc == 4) { // free
           // Delete the memory object (only if source_memory[0] is valid)
           if (t.source_memory[0] != 0) {
             champsim::delete_memory_object(champsim::address{t.source_memory[0]});
           }
-        } else if (t.malloc_type == 2) { // realloc
+        } else if (t.is_malloc == 3) { // realloc
           // Delete the old memory object at source_memory[1] (only if valid)
           if (t.source_memory[1] != 0) {
             champsim::delete_memory_object(champsim::address{t.source_memory[1]});
@@ -153,7 +153,7 @@ ooo_model_instr bulk_tracereader<T, F>::operator()()
             );
             champsim::add_memory_object(obj);
           }
-        } else { // malloc, calloc
+        } else { // malloc (1), calloc (2)
           // Create a new memory object (only if destination_memory[0] and source_memory[0] are valid)
           if (t.destination_memory[0] != 0 && t.source_memory[0] != 0) {
             champsim::MemoryObject obj(

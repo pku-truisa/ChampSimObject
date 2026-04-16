@@ -91,8 +91,7 @@ VOID MallocBefore(ADDRINT size, ADDRINT ip)
   malloc_outfile << "MALLOC " << size << std::endl;
   trace_instr_format_t instr = {};
   instr.ip = (unsigned long long int)ip;
-  instr.is_malloc = 1;
-  instr.malloc_type = 0;
+  instr.is_malloc = 1; // 1: malloc
   instr.source_memory[0] = size;
   malloc_traces.push_back(instr);
 }
@@ -113,8 +112,7 @@ VOID FreeBefore(ADDRINT ptr, ADDRINT ip)
   malloc_outfile << "FREE " << ptr << std::endl;
   trace_instr_format_t instr = {};
   instr.ip = (unsigned long long int)ip;
-  instr.is_malloc = 1;
-  instr.malloc_type = 3;
+  instr.is_malloc = 4; // 4: free
   instr.source_memory[0] = ptr;
   WriteTrace(instr);
 }
@@ -124,8 +122,7 @@ VOID CallocBefore(ADDRINT nmemb, ADDRINT size, ADDRINT ip)
   malloc_outfile << "CALLOC " << nmemb << " " << size << std::endl;
   trace_instr_format_t instr = {};
   instr.ip = (unsigned long long int)ip;
-  instr.is_malloc = 1;
-  instr.malloc_type = 1;
+  instr.is_malloc = 2; // 2: calloc
   instr.source_memory[0] = nmemb * size;
   malloc_traces.push_back(instr);
 }
@@ -146,8 +143,7 @@ VOID ReallocBefore(ADDRINT ptr, ADDRINT size, ADDRINT ip)
   malloc_outfile << "REALLOC " << ptr << " " << size << std::endl;
   trace_instr_format_t instr = {};
   instr.ip = (unsigned long long int)ip;
-  instr.is_malloc = 1;
-  instr.malloc_type = 2;
+  instr.is_malloc = 3; // 3: realloc
   instr.source_memory[0] = size;
   instr.source_memory[1] = ptr;
   malloc_traces.push_back(instr);
