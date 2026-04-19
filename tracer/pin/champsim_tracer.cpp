@@ -25,6 +25,7 @@
 #include <string.h>
 #include <string>
 #include <vector>
+#include <lzma.h>
 
 #include "../../inc/trace_instruction.h"
 #include "pin.H"
@@ -37,7 +38,11 @@ using trace_instr_format_t = input_instr;
 
 UINT64 instrCount = 0;
 
-std::ofstream outfile;
+const size_t BUFFER_SIZE = 16 * 1024 * 1024; // 16MB buffer
+uint8_t* out_buffer = nullptr;
+size_t buffer_pos = 0;  // 当前缓冲区位置
+lzma_stream strm = LZMA_STREAM_INIT;
+FILE* xz_file = nullptr;
 std::ofstream malloc_outfile;
 std::vector<trace_instr_format_t> malloc_traces;
 
@@ -46,7 +51,7 @@ trace_instr_format_t curr_instr;
 /* ===================================================================== */
 // Command line switches
 /* ===================================================================== */
-KNOB<std::string> KnobOutputFile(KNOB_MODE_WRITEONCE, "pintool", "o", "champsim.trace", "specify file name for Champsim tracer output");
+KNOB<std::string> KnobOutputFile(KNOB_MODE_WRITEONCE, "pintool", "o", "champsim.trace.xz", "specify file name for Champsim tracer output");
 
 KNOB<std::string> KnobMallocOutputFile(KNOB_MODE_WRITEONCE, "pintool", "m", "malloc.trace", "specify file name for malloc trace output");
 
@@ -64,7 +69,7 @@ KNOB<UINT64> KnobTraceInstructions(KNOB_MODE_WRITEONCE, "pintool", "t", "0", "Ho
 INT32 Usage()
 {
   std::cerr << "This tool creates a register and memory access trace" << std::endl
-            << "Specify the output trace file with -o" << std::endl
+            << "Specify the output trace.xz file with -o" << std::endl
             << "Specify the number of instructions to skip before tracing with -s" << std::endl
             << "Specify the number of instructions to trace with -t" << std::endl
             << std::endl;
@@ -78,11 +83,33 @@ INT32 Usage()
 // Analysis routines
 /* ===================================================================== */
 
-void WriteTrace(const trace_instr_format_t& instr)
-{
-  typename decltype(outfile)::char_type buf[sizeof(trace_instr_format_t)];
-  std::memcpy(buf, &instr, sizeof(trace_instr_format_t));
-  outfile.write(buf, sizeof(trace_instr_format_t));
+void WriteTrace(const trace_instr_format_t& instr) {
+    strm.next_in = (const uint8_t*)&instr;
+    strm.avail_in = sizeof(trace_instr_format_t);
+
+    while (strm.avail_in > 0) {
+        strm.next_out = out_buffer + buffer_pos;
+        strm.avail_out = BUFFER_SIZE - buffer_pos;
+
+        lzma_ret ret = lzma_code(&strm, LZMA_RUN);
+        
+        // 更新缓冲区位置
+        buffer_pos = BUFFER_SIZE - strm.avail_out;
+
+        // 当剩余空间不足一个Instruction时写入文件
+        if (strm.avail_out < sizeof(trace_instr_format_t)) {
+            if (fwrite(out_buffer, 1, buffer_pos, xz_file) != buffer_pos) {
+                std::cerr << "Fatal Disk I/O Error!" << std::endl;
+                exit(1); // 发现错误立即停止，防止产生坏文件
+            }
+            buffer_pos = 0; 
+        }
+
+        if (ret != LZMA_OK) {
+            std::cerr << "LZMA Error: " << ret << std::endl;
+            exit(1); 
+        }
+    }
 }
 
 // Malloc tracking functions
@@ -177,9 +204,7 @@ BOOL ShouldWrite()
 
 void WriteCurrentInstruction()
 {
-  typename decltype(outfile)::char_type buf[sizeof(trace_instr_format_t)];
-  std::memcpy(buf, &curr_instr, sizeof(trace_instr_format_t));
-  outfile.write(buf, sizeof(trace_instr_format_t));
+  WriteTrace(curr_instr);
 }
 
 void BranchOrNot(UINT32 taken)
@@ -295,7 +320,31 @@ VOID Instruction(INS ins, VOID* v)
  *                              PIN_AddFiniFunction function call
  */
 VOID Fini(INT32 code, VOID* v) {
-  outfile.close();
+  if (out_buffer && xz_file) {
+    // Finish the stream
+    strm.next_in = nullptr;
+    strm.avail_in = 0;
+    lzma_ret ret;
+    do {
+      strm.next_out = out_buffer + buffer_pos;
+      strm.avail_out = BUFFER_SIZE - buffer_pos;
+      ret = lzma_code(&strm, LZMA_FINISH);
+      buffer_pos = BUFFER_SIZE - strm.avail_out;
+      if (buffer_pos > 0) {
+        fwrite(out_buffer, 1, buffer_pos, xz_file);
+        buffer_pos = 0;
+      }
+      
+    } while (ret == LZMA_OK);
+    
+    if (ret != LZMA_STREAM_END) {
+      std::cerr << "LZMA finish error: " << ret << std::endl;
+    }
+    
+    lzma_end(&strm);
+    fclose(xz_file);
+    delete[] out_buffer;
+  }
   malloc_outfile.close();
 }
 
@@ -314,9 +363,26 @@ int main(int argc, char* argv[])
   if (PIN_Init(argc, argv))
     return Usage();
 
-  outfile.open(KnobOutputFile.Value().c_str(), std::ios_base::binary | std::ios_base::trunc);
-  if (!outfile) {
-    std::cout << "Couldn't open output trace file. Exiting." << std::endl;
+  // Initialize LZMA encoder with default settings
+  lzma_ret ret = lzma_easy_encoder(&strm, 1, LZMA_CHECK_CRC64);
+  if (ret != LZMA_OK) {
+    std::cerr << "Error initializing LZMA encoder: " << ret << std::endl;
+    exit(1);
+  }
+  
+  // Allocate output buffer
+  out_buffer = new uint8_t[BUFFER_SIZE];
+  
+  // Open output file with .xz extension
+  std::string output_filename = KnobOutputFile.Value();
+  if (output_filename.size() < 3 || output_filename.substr(output_filename.size() - 3) != ".xz") {
+    output_filename += ".xz";
+  }
+  xz_file = fopen(output_filename.c_str(), "wb");
+  if (!xz_file) {
+    std::cerr << "Couldn't open output trace file " << output_filename << ". Exiting." << std::endl;
+    delete[] out_buffer;
+    lzma_end(&strm);
     exit(1);
   }
 
