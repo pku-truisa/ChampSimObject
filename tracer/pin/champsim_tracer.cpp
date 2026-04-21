@@ -40,6 +40,8 @@ UINT64 instrCount = 0;
 std::ofstream outfile;
 std::ofstream malloc_outfile;
 std::vector<trace_instr_format_t> malloc_traces;
+std::vector<trace_instr_format_t> instr_buffer;
+const size_t INSTR_BUFFER_SIZE = 16 * 1024 * 1024; // 16MB buffer
 
 trace_instr_format_t curr_instr;
 
@@ -78,13 +80,6 @@ INT32 Usage()
 // Analysis routines
 /* ===================================================================== */
 
-void WriteTrace(const trace_instr_format_t& instr)
-{
-  typename decltype(outfile)::char_type buf[sizeof(trace_instr_format_t)];
-  std::memcpy(buf, &instr, sizeof(trace_instr_format_t));
-  outfile.write(buf, sizeof(trace_instr_format_t));
-}
-
 // Malloc tracking functions
 VOID MallocBefore(ADDRINT size, ADDRINT ip)
 {
@@ -100,9 +95,9 @@ VOID MallocAfter(ADDRINT ret)
 {
   malloc_outfile << "MALLOC_RET " << ret << std::endl;
   if (!malloc_traces.empty()) {
-    trace_instr_format_t instr = malloc_traces.back();
-    instr.destination_memory[0] = ret;
-    WriteTrace(instr);
+    curr_instr = malloc_traces.back();
+    curr_instr.destination_memory[0] = ret;
+    WriteCurrentInstruction();
     malloc_traces.pop_back();
   }
 }
@@ -110,11 +105,11 @@ VOID MallocAfter(ADDRINT ret)
 VOID FreeBefore(ADDRINT ptr, ADDRINT ip)
 {
   malloc_outfile << "FREE " << ptr << std::endl;
-  trace_instr_format_t instr = {};
-  instr.ip = (unsigned long long int)ip;
-  instr.is_malloc = 4; // 4: free
-  instr.source_memory[0] = ptr;
-  WriteTrace(instr);
+  curr_instr = {};
+  curr_instr.ip = (unsigned long long int)ip;
+  curr_instr.is_malloc = 4; // 4: free
+  curr_instr.source_memory[0] = ptr;
+  WriteCurrentInstruction();
 }
 
 VOID CallocBefore(ADDRINT nmemb, ADDRINT size, ADDRINT ip)
@@ -131,9 +126,9 @@ VOID CallocAfter(ADDRINT ret)
 {
   malloc_outfile << "CALLOC_RET " << ret << std::endl;
   if (!malloc_traces.empty()) {
-    trace_instr_format_t instr = malloc_traces.back();
-    instr.destination_memory[0] = ret;
-    WriteTrace(instr);
+    curr_instr = malloc_traces.back();
+    curr_instr.destination_memory[0] = ret;
+    WriteCurrentInstruction();
     malloc_traces.pop_back();
   }
 }
@@ -153,9 +148,9 @@ VOID ReallocAfter(ADDRINT ret)
 {
   malloc_outfile << "REALLOC_RET " << ret << std::endl;
   if (!malloc_traces.empty()) {
-    trace_instr_format_t instr = malloc_traces.back();
-    instr.destination_memory[0] = ret;
-    WriteTrace(instr);
+    curr_instr = malloc_traces.back();
+    curr_instr.destination_memory[0] = ret;
+    WriteCurrentInstruction();
     malloc_traces.pop_back();
   }
 }
@@ -177,9 +172,15 @@ BOOL ShouldWrite()
 
 void WriteCurrentInstruction()
 {
-  typename decltype(outfile)::char_type buf[sizeof(trace_instr_format_t)];
-  std::memcpy(buf, &curr_instr, sizeof(trace_instr_format_t));
-  outfile.write(buf, sizeof(trace_instr_format_t));
+  instr_buffer.push_back(curr_instr);
+
+  // 当buffer满时，一次性写入文件
+  if (instr_buffer.size() * sizeof(trace_instr_format_t) >= INSTR_BUFFER_SIZE) {
+    outfile.write(reinterpret_cast<const char*>(instr_buffer.data()), 
+                 instr_buffer.size() * sizeof(trace_instr_format_t));
+    }
+    instr_buffer.clear();
+  }
 }
 
 void BranchOrNot(UINT32 taken)
@@ -295,6 +296,12 @@ VOID Instruction(INS ins, VOID* v)
  *                              PIN_AddFiniFunction function call
  */
 VOID Fini(INT32 code, VOID* v) {
+  // 写入buffer中剩余的数据
+  if (!instr_buffer.empty()) {
+    outfile.write(reinterpret_cast<const char*>(instr_buffer.data()), 
+                 instr_buffer.size() * sizeof(trace_instr_format_t));
+    instr_buffer.clear();
+  }
   outfile.close();
   malloc_outfile.close();
 }
@@ -319,6 +326,9 @@ int main(int argc, char* argv[])
     std::cout << "Couldn't open output trace file. Exiting." << std::endl;
     exit(1);
   }
+
+  // 预分配instruction buffer的容量，避免频繁的内存重新分配
+  instr_buffer.reserve(INSTR_BUFFER_SIZE / sizeof(trace_instr_format_t));
 
   malloc_outfile.open(KnobMallocOutputFile.Value().c_str(), std::ios_base::out);
   if (!malloc_outfile) {
