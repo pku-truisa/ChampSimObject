@@ -83,7 +83,7 @@ INT32 Usage()
 // Malloc tracking functions
 VOID MallocBefore(ADDRINT size, ADDRINT ip)
 {
-  malloc_outfile << "MALLOC " << size << std::endl;
+  malloc_outfile << "MALLOC_SIZE " << size << std::endl;
   trace_instr_format_t instr = {};
   instr.ip = (unsigned long long int)ip;
   instr.is_malloc = 1; // 1: malloc
@@ -93,7 +93,7 @@ VOID MallocBefore(ADDRINT size, ADDRINT ip)
 
 VOID MallocAfter(ADDRINT ret)
 {
-  malloc_outfile << "MALLOC_RET " << ret << std::endl;
+  malloc_outfile << "MALLOC_RET 0x" << std::hex << ret << std::dec << std::endl;
   if (!malloc_traces.empty()) {
     curr_instr = malloc_traces.back();
     curr_instr.destination_memory[0] = ret;
@@ -104,7 +104,7 @@ VOID MallocAfter(ADDRINT ret)
 
 VOID FreeBefore(ADDRINT ptr, ADDRINT ip)
 {
-  malloc_outfile << "FREE " << ptr << std::endl;
+  malloc_outfile << "FREE 0x" << std::hex << ptr << std::dec << std::endl;
   curr_instr = {};
   curr_instr.ip = (unsigned long long int)ip;
   curr_instr.is_malloc = 4; // 4: free
@@ -114,7 +114,7 @@ VOID FreeBefore(ADDRINT ptr, ADDRINT ip)
 
 VOID CallocBefore(ADDRINT nmemb, ADDRINT size, ADDRINT ip)
 {
-  malloc_outfile << "CALLOC " << nmemb << " " << size << std::endl;
+  malloc_outfile << "CALLOC_SIZE " << nmemb << " " << size << std::endl;
   trace_instr_format_t instr = {};
   instr.ip = (unsigned long long int)ip;
   instr.is_malloc = 2; // 2: calloc
@@ -124,7 +124,7 @@ VOID CallocBefore(ADDRINT nmemb, ADDRINT size, ADDRINT ip)
 
 VOID CallocAfter(ADDRINT ret)
 {
-  malloc_outfile << "CALLOC_RET " << ret << std::endl;
+  malloc_outfile << "CALLOC_RET 0x" << std::hex << ret << std::dec << std::endl;
   if (!malloc_traces.empty()) {
     curr_instr = malloc_traces.back();
     curr_instr.destination_memory[0] = ret;
@@ -135,7 +135,7 @@ VOID CallocAfter(ADDRINT ret)
 
 VOID ReallocBefore(ADDRINT ptr, ADDRINT size, ADDRINT ip)
 {
-  malloc_outfile << "REALLOC " << ptr << " " << size << std::endl;
+  malloc_outfile << "REALLOC_SIZE" << std::dec << " " << size << " REALLOC_PTR 0x" << std::hex << ptr << std::dec << std::endl;
   trace_instr_format_t instr = {};
   instr.ip = (unsigned long long int)ip;
   instr.is_malloc = 3; // 3: realloc
@@ -146,7 +146,7 @@ VOID ReallocBefore(ADDRINT ptr, ADDRINT size, ADDRINT ip)
 
 VOID ReallocAfter(ADDRINT ret)
 {
-  malloc_outfile << "REALLOC_RET " << ret << std::endl;
+  malloc_outfile << "REALLOC_RET 0x" << std::hex << ret << std::dec << std::endl;
   if (!malloc_traces.empty()) {
     curr_instr = malloc_traces.back();
     curr_instr.destination_memory[0] = ret;
