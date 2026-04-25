@@ -25,6 +25,7 @@
 #include <string.h>
 #include <string>
 #include <vector>
+#include <sstream>
 
 #include "../../inc/trace_instruction.h"
 #include "pin.H"
@@ -45,12 +46,20 @@ const size_t INSTR_BUFFER_SIZE = 16 * 1024 * 1024; // 16MB buffer
 
 trace_instr_format_t curr_instr;
 
+// Simpoint-related variables
+std::vector<UINT64> simpointSegments; // Segment markers in billions of instructions
+std::vector<std::string> segmentFileNames; // Output file names for each segment
+UINT32 currentSegmentIndex = 0; // Current active segment index
+bool useSimpointMode = false; // Flag to indicate if simpoint mode is active
+
 /* ===================================================================== */
 // Command line switches
 /* ===================================================================== */
 KNOB<std::string> KnobOutputFile(KNOB_MODE_WRITEONCE, "pintool", "o", "champsim.trace", "specify file name for Champsim tracer output");
 
 KNOB<std::string> KnobMallocOutputFile(KNOB_MODE_WRITEONCE, "pintool", "m", "malloc.trace", "specify file name for malloc trace output");
+
+KNOB<std::string> KnobSimpointFile(KNOB_MODE_WRITEONCE, "pintool", "p", "", "specify simpoint file path (each line is a segment marker in billions of instructions)");
 
 KNOB<UINT64> KnobSkipInstructions(KNOB_MODE_WRITEONCE, "pintool", "s", "0", "How many instructions to skip before tracing begins");
 
@@ -61,12 +70,122 @@ KNOB<UINT64> KnobTraceInstructions(KNOB_MODE_WRITEONCE, "pintool", "t", "0", "Ho
 /* ===================================================================== */
 
 /*!
+ *  Read simpoint file and initialize segment tracking
+ */
+BOOL ReadSimpointFile(const std::string& simpointFilePath, const std::string& baseOutputFile)
+{
+  std::ifstream simpointFile(simpointFilePath.c_str());
+  if (!simpointFile.is_open()) {
+    std::cerr << "Error: Cannot open simpoint file: " << simpointFilePath << std::endl;
+    return FALSE;
+  }
+
+  std::string line;
+  UINT32 segmentIndex = 0;
+  
+  while (std::getline(simpointFile, line)) {
+    // Skip empty lines
+    if (line.empty()) continue;
+    
+    // Parse the number (segment marker in billions)
+    std::istringstream iss(line);
+    UINT64 segmentValue;
+    if (!(iss >> segmentValue)) {
+      std::cerr << "Warning: Skipping invalid line in simpoint file: " << line << std::endl;
+      continue;
+    }
+    
+    // Convert billions to actual instruction count
+    UINT64 segmentInstrCount = segmentValue * 1000000000ULL; // Multiply by 1 billion
+    
+    simpointSegments.push_back(segmentInstrCount);
+    
+    // Generate output filename: <base><segmentValue>B.trace
+    // Remove .trace extension from base if present
+    std::string baseName = baseOutputFile;
+    size_t traceExtPos = baseName.find(".trace");
+    if (traceExtPos != std::string::npos) {
+      baseName = baseName.substr(0, traceExtPos);
+    }
+    
+    std::ostringstream fileNameStream;
+    fileNameStream << baseName << segmentValue << "B.trace";
+    segmentFileNames.push_back(fileNameStream.str());
+    
+    segmentIndex++;
+  }
+  
+  simpointFile.close();
+  
+  if (simpointSegments.empty()) {
+    std::cerr << "Error: No valid segments found in simpoint file" << std::endl;
+    return FALSE;
+  }
+  
+  std::cerr << "Loaded " << simpointSegments.size() << " simpoint segments" << std::endl;
+  for (UINT32 i = 0; i < simpointSegments.size(); i++) {
+    std::cerr << "  Segment " << i << ": " << segmentFileNames[i] 
+              << " (starts at " << simpointSegments[i] << " instructions)" << std::endl;
+  }
+  
+  return TRUE;
+}
+
+/*!
+ *  Switch to next segment trace file
+ */
+VOID SwitchToNextSegment()
+{
+  if (currentSegmentIndex >= segmentFileNames.size()) {
+    return; // No more segments
+  }
+  
+  // Close current file if open
+  if (outfile.is_open()) {
+    // Flush buffer first
+    if (!instr_buffer.empty()) {
+      outfile.write(reinterpret_cast<const char*>(&instr_buffer[0]), 
+                   instr_buffer.size() * sizeof(trace_instr_format_t));
+      instr_buffer.clear();
+    }
+    outfile.close();
+  }
+  
+  // Open next segment file
+  std::string nextFileName = segmentFileNames[currentSegmentIndex];
+  outfile.open(nextFileName.c_str(), std::ios_base::binary | std::ios_base::trunc);
+  if (!outfile) {
+    std::cerr << "Error: Cannot open segment output file: " << nextFileName << std::endl;
+    exit(1);
+  }
+  
+  std::cerr << "Switched to segment " << currentSegmentIndex 
+            << ": " << nextFileName << std::endl;
+  
+  currentSegmentIndex++;
+}
+
+/*!
+ *  Check if we should switch to next segment
+ */
+BOOL ShouldSwitchSegment()
+{
+  if (!useSimpointMode || currentSegmentIndex >= simpointSegments.size()) {
+    return FALSE;
+  }
+  
+  // Check if we've reached the start of the next segment
+  return instrCount >= simpointSegments[currentSegmentIndex];
+}
+
+/*!
  *  Print out help message.
  */
 INT32 Usage()
 {
   std::cerr << "This tool creates a register and memory access trace" << std::endl
             << "Specify the output trace file with -o" << std::endl
+            << "Specify simpoint file with -p (each line is a segment marker in billions)" << std::endl
             << "Specify the number of instructions to skip before tracing with -s" << std::endl
             << "Specify the number of instructions to trace with -t" << std::endl
             << std::endl;
@@ -164,6 +283,22 @@ void ResetCurrentInstruction(VOID* ip)
 BOOL ShouldWrite()
 {
   ++instrCount;
+  
+  // In simpoint mode, check if we should switch segments
+  if (useSimpointMode) {
+    // Check if we've reached the start of the next segment
+    while (currentSegmentIndex < simpointSegments.size() && 
+           instrCount >= simpointSegments[currentSegmentIndex]) {
+      SwitchToNextSegment();
+    }
+    
+    // Only write if we're currently in an active segment file
+    // currentSegmentIndex > 0 means we've started at least one segment
+    // currentSegmentIndex <= simpointSegments.size() means we haven't passed all segments
+    return (currentSegmentIndex > 0 && currentSegmentIndex <= simpointSegments.size() && outfile.is_open());
+  }
+  
+  // Original non-simpoint logic
   if (KnobTraceInstructions.Value() == 0) {
     return instrCount > KnobSkipInstructions.Value();
   }
@@ -176,10 +311,9 @@ void WriteCurrentInstruction()
 
   // 当buffer满时，一次性写入文件
   if (instr_buffer.size() * sizeof(trace_instr_format_t) >= INSTR_BUFFER_SIZE) {
-    outfile.write(reinterpret_cast<const char*>(instr_buffer.data()), 
+    outfile.write(reinterpret_cast<const char*>(&instr_buffer[0]), 
                  instr_buffer.size() * sizeof(trace_instr_format_t));
     instr_buffer.clear();
-    }
   }
 }
 
@@ -298,20 +432,17 @@ VOID Instruction(INS ins, VOID* v)
 VOID Fini(INT32 code, VOID* v) {
   // 写入buffer中剩余的数据
   if (!instr_buffer.empty()) {
-    outfile.write(reinterpret_cast<const char*>(instr_buffer.data()), 
+    outfile.write(reinterpret_cast<const char*>(&instr_buffer[0]), 
                  instr_buffer.size() * sizeof(trace_instr_format_t));
     instr_buffer.clear();
   }
   outfile.close();
   malloc_outfile.close();
-
-  // Optional: Compress the output file using xz
-  // Note: system() calls can be slow and depend on 'xz' being in PATH
-  std::string cmd = "xz -f " + KnobOutputFile.Value(); 
-  // -f forces overwrite if .xz already exists
-  int ret = system(cmd.c_str());
-  if (ret != 0) {
-      std::cerr << "Warning: Failed to compress trace file." << std::endl;
+  
+  if (useSimpointMode) {
+    std::cerr << "Simpoint tracing completed. Generated " 
+              << (currentSegmentIndex > 0 ? currentSegmentIndex : 0) 
+              << " segment trace files." << std::endl;
   }
 }
 
@@ -330,10 +461,26 @@ int main(int argc, char* argv[])
   if (PIN_Init(argc, argv))
     return Usage();
 
-  outfile.open(KnobOutputFile.Value().c_str(), std::ios_base::binary | std::ios_base::trunc);
-  if (!outfile) {
-    std::cout << "Couldn't open output trace file. Exiting." << std::endl;
-    exit(1);
+  // Check if simpoint mode is enabled
+  if (!KnobSimpointFile.Value().empty()) {
+    useSimpointMode = TRUE;
+    
+    // Read simpoint file and initialize segments
+    if (!ReadSimpointFile(KnobSimpointFile.Value(), KnobOutputFile.Value())) {
+      std::cerr << "Error: Failed to initialize simpoint mode" << std::endl;
+      exit(1);
+    }
+    
+    // In simpoint mode, we start with the first segment file
+    // The actual opening happens when we reach the first segment
+    std::cerr << "Simpoint mode enabled. Will trace " << simpointSegments.size() << " segments." << std::endl;
+  } else {
+    // Original non-simpoint mode: open output file immediately
+    outfile.open(KnobOutputFile.Value().c_str(), std::ios_base::binary | std::ios_base::trunc);
+    if (!outfile) {
+      std::cout << "Couldn't open output trace file. Exiting." << std::endl;
+      exit(1);
+    }
   }
 
   // 预分配instruction buffer的容量，避免频繁的内存重新分配
