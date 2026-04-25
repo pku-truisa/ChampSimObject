@@ -178,8 +178,8 @@ void WriteCurrentInstruction()
   if (instr_buffer.size() * sizeof(trace_instr_format_t) >= INSTR_BUFFER_SIZE) {
     outfile.write(reinterpret_cast<const char*>(instr_buffer.data()), 
                  instr_buffer.size() * sizeof(trace_instr_format_t));
-    }
     instr_buffer.clear();
+    }
   }
 }
 
@@ -304,6 +304,15 @@ VOID Fini(INT32 code, VOID* v) {
   }
   outfile.close();
   malloc_outfile.close();
+
+  // Optional: Compress the output file using xz
+  // Note: system() calls can be slow and depend on 'xz' being in PATH
+  std::string cmd = "xz -f " + KnobOutputFile.Value(); 
+  // -f forces overwrite if .xz already exists
+  int ret = system(cmd.c_str());
+  if (ret != 0) {
+      std::cerr << "Warning: Failed to compress trace file." << std::endl;
+  }
 }
 
 /*!
