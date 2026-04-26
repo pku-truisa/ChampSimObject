@@ -172,6 +172,15 @@ BOOL OpenAllSegmentFiles()
     return FALSE;
   }
   
+  // Safety check: limit the number of simultaneously open files
+  // Most systems have a file descriptor limit (typically 1024 or higher)
+  const size_t MAX_OPEN_FILES = 500; // Conservative limit
+  if (segmentFileNames.size() > MAX_OPEN_FILES) {
+    DEBUG_LOG("Error: Too many segments (" << segmentFileNames.size() 
+              << "). Maximum supported: " << MAX_OPEN_FILES);
+    return FALSE;
+  }
+  
   for (size_t i = 0; i < segmentFileNames.size(); i++) {
     std::ofstream* newFile = new std::ofstream();
     newFile->open(segmentFileNames[i].c_str(), std::ios_base::binary | std::ios_base::trunc);
@@ -233,15 +242,20 @@ VOID SwitchToNextSegment()
   }
   
   // Flush current segment buffer before switching
+  // This ensures all instructions (including malloc) are written in correct order
   if (!instr_buffer.empty() && currentSegmentIndex > 0 && currentSegmentIndex <= segmentFiles.size()) {
     // Defensive check: validate file pointer before writing
     size_t fileIndex = currentSegmentIndex - 1;
     if (segmentFiles[fileIndex] != nullptr && segmentFiles[fileIndex]->is_open()) {
-      segmentFiles[fileIndex]->write(
-          reinterpret_cast<const char*>(&instr_buffer[0]), 
-          instr_buffer.size() * sizeof(trace_instr_format_t));
-      if (!segmentFiles[fileIndex]->good()) {
-        DEBUG_LOG("Error: Failed to flush buffer for segment " << fileIndex);
+      try {
+        segmentFiles[fileIndex]->write(
+            reinterpret_cast<const char*>(&instr_buffer[0]), 
+            instr_buffer.size() * sizeof(trace_instr_format_t));
+        if (!segmentFiles[fileIndex]->good()) {
+          DEBUG_LOG("Error: Failed to flush buffer for segment " << fileIndex);
+        }
+      } catch (const std::exception& e) {
+        DEBUG_LOG("Error: Exception flushing buffer for segment " << fileIndex << ": " << e.what());
       }
     } else {
       DEBUG_LOG("Warning: Cannot flush buffer, segment file " << fileIndex 
@@ -414,61 +428,56 @@ BOOL ShouldWrite()
 
 void WriteCurrentInstruction()
 {
-  // Check if this is a malloc-related instruction
-  if (curr_instr.is_malloc != 0) {
-    // Malloc/calloc/realloc/free: write to ALL segment files
-    WriteMallocToAllSegments(curr_instr);
-  } else {
-    // Regular instruction: write only to current segment buffer
-    
-    // Defensive check: Validate currentSegmentIndex bounds
-    if (currentSegmentIndex == 0) {
-      DEBUG_LOG("Warning: WriteCurrentInstruction called before any segment is active (currentSegmentIndex=0)");
-      return;
-    }
-    
-    if (currentSegmentIndex > segmentFiles.size()) {
-      DEBUG_LOG("Error: currentSegmentIndex (" << currentSegmentIndex 
-                << ") exceeds segmentFiles size (" << segmentFiles.size() << ")");
-      return;
-    }
-    
-    // Defensive check: Validate file pointer
-    size_t fileIndex = currentSegmentIndex - 1;
-    if (segmentFiles[fileIndex] == nullptr) {
-      DEBUG_LOG("Error: segmentFiles[" << fileIndex << "] is null pointer");
-      return;
-    }
-    
-    if (!segmentFiles[fileIndex]->is_open()) {
-      DEBUG_LOG("Error: segmentFiles[" << fileIndex << "] is not open");
-      return;
-    }
-    
-    // Safe to proceed with buffering
+  // ALL instructions (including malloc) go to buffer for current segment
+  // This ensures correct ordering within the current segment
+  
+  // Defensive check: Validate currentSegmentIndex bounds
+  if (currentSegmentIndex == 0) {
+    DEBUG_LOG("Warning: WriteCurrentInstruction called before any segment is active (currentSegmentIndex=0)");
+    return;
+  }
+  
+  if (currentSegmentIndex > segmentFiles.size()) {
+    DEBUG_LOG("Error: currentSegmentIndex (" << currentSegmentIndex 
+              << ") exceeds segmentFiles size (" << segmentFiles.size() << ")");
+    return;
+  }
+  
+  // Defensive check: Validate file pointer
+  size_t fileIndex = currentSegmentIndex - 1;
+  if (segmentFiles[fileIndex] == nullptr) {
+    DEBUG_LOG("Error: segmentFiles[" << fileIndex << "] is null pointer");
+    return;
+  }
+  
+  if (!segmentFiles[fileIndex]->is_open()) {
+    DEBUG_LOG("Error: segmentFiles[" << fileIndex << "] is not open");
+    return;
+  }
+  
+  // Safe to proceed with buffering - ALL instructions use buffer
+  try {
+    instr_buffer.push_back(curr_instr);
+  } catch (const std::exception& e) {
+    DEBUG_LOG("Error: Failed to add instruction to buffer: " << e.what());
+    return;
+  }
+  
+  // When buffer is full, flush to current segment file only
+  if (instr_buffer.size() * sizeof(trace_instr_format_t) >= INSTR_BUFFER_SIZE) {
     try {
-      instr_buffer.push_back(curr_instr);
-    } catch (const std::exception& e) {
-      DEBUG_LOG("Error: Failed to add instruction to buffer: " << e.what());
-      return;
-    }
-    
-    // When buffer is full, flush to current segment file only
-    if (instr_buffer.size() * sizeof(trace_instr_format_t) >= INSTR_BUFFER_SIZE) {
-      try {
-        segmentFiles[fileIndex]->write(
-            reinterpret_cast<const char*>(&instr_buffer[0]), 
-            instr_buffer.size() * sizeof(trace_instr_format_t));
-        
-        if (!segmentFiles[fileIndex]->good()) {
-          DEBUG_LOG("Error: Failed to write instruction buffer to segment " << fileIndex);
-        }
-        instr_buffer.clear();
-      } catch (const std::exception& e) {
-        DEBUG_LOG("Error: Exception during buffer flush to segment " 
-                  << fileIndex << ": " << e.what());
-        // Don't clear buffer on error to preserve data
+      segmentFiles[fileIndex]->write(
+          reinterpret_cast<const char*>(&instr_buffer[0]), 
+          instr_buffer.size() * sizeof(trace_instr_format_t));
+      
+      if (!segmentFiles[fileIndex]->good()) {
+        DEBUG_LOG("Error: Failed to write instruction buffer to segment " << fileIndex);
       }
+      instr_buffer.clear();
+    } catch (const std::exception& e) {
+      DEBUG_LOG("Error: Exception during buffer flush to segment " 
+                << fileIndex << ": " << e.what());
+      // Don't clear buffer on error to preserve data
     }
   }
 }
@@ -606,7 +615,8 @@ VOID Fini(INT32 code, VOID* v) {
     malloc_traces.clear();
   }
   
-  // Flush instruction buffers for all segments
+  // Flush instruction buffer for current segment
+  // This ensures all instructions (including malloc) are written in correct order
   if (!instr_buffer.empty() && currentSegmentIndex > 0 && currentSegmentIndex <= segmentFiles.size()) {
     // Defensive check: validate file pointer before writing
     size_t fileIndex = currentSegmentIndex - 1;
@@ -701,12 +711,22 @@ int main(int argc, char* argv[])
     // Read simpoint file and initialize segments
     if (!ReadSimpointFile(KnobSimpointFile.Value(), KnobOutputFile.Value())) {
       DEBUG_LOG("Error: Failed to initialize simpoint mode");
+      
+      // Clean up debug log before exit
+      if (debug_log.is_open()) {
+        debug_log.close();
+      }
       exit(1);
     }
     
     // Open ALL segment files at initialization
     if (!OpenAllSegmentFiles()) {
       DEBUG_LOG("Error: Failed to open segment files");
+      
+      // Clean up debug log before exit
+      if (debug_log.is_open()) {
+        debug_log.close();
+      }
       exit(1);
     }
     
@@ -719,17 +739,10 @@ int main(int argc, char* argv[])
     if (!singleFile->is_open()) {
       DEBUG_LOG("Couldn't open output trace file. Exiting.");
       
-      // Clean up any previously opened segment files (should be empty in this branch, but be safe)
-      for (size_t i = 0; i < segmentFiles.size(); i++) {
-        if (segmentFiles[i] != nullptr) {
-          if (segmentFiles[i]->is_open()) {
-            segmentFiles[i]->close();
-          }
-          delete segmentFiles[i];
-          segmentFiles[i] = nullptr;
-        }
+      // Clean up debug log before exit
+      if (debug_log.is_open()) {
+        debug_log.close();
       }
-      segmentFiles.clear();
       
       delete singleFile;
       exit(1);
@@ -747,7 +760,7 @@ int main(int argc, char* argv[])
   if (!malloc_outfile) {
     DEBUG_LOG("Couldn't open malloc trace file. Exiting.");
     
-    // Clean up segment files before exiting
+    // Clean up all opened resources before exit
     for (size_t i = 0; i < segmentFiles.size(); i++) {
       if (segmentFiles[i] != nullptr) {
         if (segmentFiles[i]->is_open()) {
@@ -758,6 +771,11 @@ int main(int argc, char* argv[])
       }
     }
     segmentFiles.clear();
+    
+    // Clean up debug log before exit
+    if (debug_log.is_open()) {
+      debug_log.close();
+    }
     
     exit(1);
   }
