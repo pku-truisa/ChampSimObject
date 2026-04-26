@@ -33,6 +33,15 @@
 using trace_instr_format_t = input_instr;
 
 /* ================================================================== */
+// Debug logging macro - only log when debug mode is enabled
+/* ================================================================== */
+#define DEBUG_LOG(msg) do { \
+  if (enableDebugLog && debug_log.is_open()) { \
+    debug_log << msg << std::endl; \
+  } \
+} while(0)
+
+/* ================================================================== */
 // Global variables
 /* ================================================================== */
 
@@ -52,6 +61,7 @@ std::vector<UINT64> simpointSegments; // Segment markers in billions of instruct
 std::vector<std::string> segmentFileNames; // Output file names for each segment
 UINT32 currentSegmentIndex = 0; // Current active segment index (1-based, 0 means not started)
 bool useSimpointMode = false; // Flag to indicate if simpoint mode is active
+bool enableDebugLog = false; // Debug logging flag - disable for performance
 
 /* ===================================================================== */
 // Command line switches
@@ -66,6 +76,26 @@ KNOB<UINT64> KnobSkipInstructions(KNOB_MODE_WRITEONCE, "pintool", "s", "0", "How
 
 KNOB<UINT64> KnobTraceInstructions(KNOB_MODE_WRITEONCE, "pintool", "t", "0", "How many instructions to trace (0 for unlimited)");
 
+KNOB<BOOL> KnobEnableDebug(KNOB_MODE_WRITEONCE, "pintool", "d", "0", "Enable debug logging (0=disabled for performance, 1=enabled for debugging)");
+
+/*!
+ *  Print out help message.
+ */
+INT32 Usage()
+{
+  std::cerr << "This tool creates a register and memory access trace" << std::endl
+            << "Specify the output trace file with -o" << std::endl
+            << "Specify simpoint file with -p (each line is a segment marker in billions)" << std::endl
+            << "Specify the number of instructions to skip before tracing with -s" << std::endl
+            << "Specify the number of instructions to trace with -t" << std::endl
+            << "Enable debug logging with -d (0=disabled for performance, 1=enabled for debugging)" << std::endl
+            << std::endl;
+
+  std::cerr << KNOB_BASE::StringKnobSummary() << std::endl;
+
+  return -1;
+}
+
 /* ===================================================================== */
 // Utilities
 /* ===================================================================== */
@@ -77,7 +107,7 @@ BOOL ReadSimpointFile(const std::string& simpointFilePath, const std::string& ba
 {
   std::ifstream simpointFile(simpointFilePath.c_str());
   if (!simpointFile.is_open()) {
-    debug_log << "Error: Cannot open simpoint file: " << simpointFilePath << std::endl;
+    DEBUG_LOG("Error: Cannot open simpoint file: " << simpointFilePath);
     return FALSE;
   }
 
@@ -92,7 +122,7 @@ BOOL ReadSimpointFile(const std::string& simpointFilePath, const std::string& ba
     std::istringstream iss(line);
     UINT64 segmentValue;
     if (!(iss >> segmentValue)) {
-      debug_log << "Warning: Skipping invalid line in simpoint file: " << line << std::endl;
+      DEBUG_LOG("Warning: Skipping invalid line in simpoint file: " << line);
       continue;
     }
     
@@ -119,14 +149,14 @@ BOOL ReadSimpointFile(const std::string& simpointFilePath, const std::string& ba
   simpointFile.close();
   
   if (simpointSegments.empty()) {
-    debug_log << "Error: No valid segments found in simpoint file" << std::endl;
+    DEBUG_LOG("Error: No valid segments found in simpoint file");
     return FALSE;
   }
   
-  debug_log << "Loaded " << simpointSegments.size() << " simpoint segments" << std::endl;
+  DEBUG_LOG("Loaded " << simpointSegments.size() << " simpoint segments");
   for (UINT32 i = 0; i < simpointSegments.size(); i++) {
-    debug_log << "  Segment " << i << ": " << segmentFileNames[i] 
-              << " (starts at " << simpointSegments[i] << " instructions)" << std::endl;
+    DEBUG_LOG("  Segment " << i << ": " << segmentFileNames[i] 
+              << " (starts at " << simpointSegments[i] << " instructions)");
   }
   
   return TRUE;
@@ -138,7 +168,7 @@ BOOL ReadSimpointFile(const std::string& simpointFilePath, const std::string& ba
 BOOL OpenAllSegmentFiles()
 {
   if (segmentFileNames.empty()) {
-    debug_log << "Error: No segment files to open" << std::endl;
+    DEBUG_LOG("Error: No segment files to open");
     return FALSE;
   }
   
@@ -147,7 +177,7 @@ BOOL OpenAllSegmentFiles()
     newFile->open(segmentFileNames[i].c_str(), std::ios_base::binary | std::ios_base::trunc);
     
     if (!newFile->is_open()) {
-      debug_log << "Error: Cannot open segment output file: " << segmentFileNames[i] << std::endl;
+      DEBUG_LOG("Error: Cannot open segment output file: " << segmentFileNames[i]);
       // Clean up already opened files
       for (size_t j = 0; j < i; j++) {
         if (segmentFiles[j]->is_open()) {
@@ -160,10 +190,10 @@ BOOL OpenAllSegmentFiles()
     }
     
     segmentFiles.push_back(newFile);
-    debug_log << "Opened segment file " << i << ": " << segmentFileNames[i] << std::endl;
+    DEBUG_LOG("Opened segment file " << i << ": " << segmentFileNames[i]);
   }
   
-  debug_log << "Successfully opened " << segmentFiles.size() << " segment files" << std::endl;
+  DEBUG_LOG("Successfully opened " << segmentFiles.size() << " segment files");
   return TRUE;
 }
 
@@ -173,11 +203,21 @@ BOOL OpenAllSegmentFiles()
 VOID WriteMallocToAllSegments(const trace_instr_format_t& instr)
 {
   for (size_t i = 0; i < segmentFiles.size(); i++) {
+    // Defensive check: validate file pointer before access
+    if (segmentFiles[i] == nullptr) {
+      DEBUG_LOG("Warning: segmentFiles[" << i << "] is null pointer, skipping");
+      continue;
+    }
+    
     if (segmentFiles[i]->is_open()) {
-      segmentFiles[i]->write(reinterpret_cast<const char*>(&instr), 
-                            sizeof(trace_instr_format_t));
-      if (!segmentFiles[i]->good()) {
-        debug_log << "Error: Failed to write malloc instruction to segment " << i << std::endl;
+      try {
+        segmentFiles[i]->write(reinterpret_cast<const char*>(&instr), 
+                              sizeof(trace_instr_format_t));
+        if (!segmentFiles[i]->good()) {
+          DEBUG_LOG("Error: Failed to write malloc instruction to segment " << i);
+        }
+      } catch (const std::exception& e) {
+        DEBUG_LOG("Error: Exception writing malloc to segment " << i << ": " << e.what());
       }
     }
   }
@@ -194,18 +234,25 @@ VOID SwitchToNextSegment()
   
   // Flush current segment buffer before switching
   if (!instr_buffer.empty() && currentSegmentIndex > 0 && currentSegmentIndex <= segmentFiles.size()) {
-    segmentFiles[currentSegmentIndex - 1]->write(
-        reinterpret_cast<const char*>(&instr_buffer[0]), 
-        instr_buffer.size() * sizeof(trace_instr_format_t));
-    if (!segmentFiles[currentSegmentIndex - 1]->good()) {
-      debug_log << "Error: Failed to flush buffer for segment " 
-                << (currentSegmentIndex - 1) << std::endl;
+    // Defensive check: validate file pointer before writing
+    size_t fileIndex = currentSegmentIndex - 1;
+    if (segmentFiles[fileIndex] != nullptr && segmentFiles[fileIndex]->is_open()) {
+      segmentFiles[fileIndex]->write(
+          reinterpret_cast<const char*>(&instr_buffer[0]), 
+          instr_buffer.size() * sizeof(trace_instr_format_t));
+      if (!segmentFiles[fileIndex]->good()) {
+        DEBUG_LOG("Error: Failed to flush buffer for segment " << fileIndex);
+      }
+    } else {
+      DEBUG_LOG("Warning: Cannot flush buffer, segment file " << fileIndex 
+                << " is null or not open");
     }
     instr_buffer.clear();
   }
   
-  debug_log << "Switched to segment " << currentSegmentIndex 
-            << ": " << segmentFileNames[currentSegmentIndex] << std::endl;
+  // Log before incrementing to avoid out-of-bounds access
+  DEBUG_LOG("Switched to segment " << currentSegmentIndex 
+            << ": " << segmentFileNames[currentSegmentIndex - 1]);
   
   currentSegmentIndex++;
 }
@@ -223,23 +270,6 @@ BOOL ShouldSwitchSegment()
   return instrCount >= simpointSegments[currentSegmentIndex];
 }
 
-/*!
- *  Print out help message.
- */
-INT32 Usage()
-{
-  std::cerr << "This tool creates a register and memory access trace" << std::endl
-            << "Specify the output trace file with -o" << std::endl
-            << "Specify simpoint file with -p (each line is a segment marker in billions)" << std::endl
-            << "Specify the number of instructions to skip before tracing with -s" << std::endl
-            << "Specify the number of instructions to trace with -t" << std::endl
-            << std::endl;
-
-  std::cerr << KNOB_BASE::StringKnobSummary() << std::endl;
-
-  return -1;
-}
-
 /* ===================================================================== */
 // Analysis routines
 /* ===================================================================== */
@@ -249,7 +279,7 @@ VOID MallocBefore(ADDRINT size, ADDRINT ip)
 {
   malloc_outfile << "MALLOC_SIZE " << size << std::endl;
   if (!malloc_outfile.good()) {
-    debug_log << "Error: Failed to write to malloc trace file" << std::endl;
+    DEBUG_LOG("Error: Failed to write to malloc trace file");
   }
   
   trace_instr_format_t instr = {};
@@ -263,7 +293,7 @@ VOID MallocAfter(ADDRINT ret)
 {
   malloc_outfile << "MALLOC_RET 0x" << std::hex << ret << std::dec << std::endl;
   if (!malloc_outfile.good()) {
-    debug_log << "Error: Failed to write to malloc trace file" << std::endl;
+    DEBUG_LOG("Error: Failed to write to malloc trace file");
   }
   
   if (!malloc_traces.empty()) {
@@ -272,7 +302,7 @@ VOID MallocAfter(ADDRINT ret)
     WriteCurrentInstruction(); // Writes to ALL segment files for malloc
     malloc_traces.pop_back();
   } else {
-    debug_log << "Warning: MallocAfter called without matching MallocBefore" << std::endl;
+    DEBUG_LOG("Warning: MallocAfter called without matching MallocBefore");
   }
 }
 
@@ -280,7 +310,7 @@ VOID FreeBefore(ADDRINT ptr, ADDRINT ip)
 {
   malloc_outfile << "FREE 0x" << std::hex << ptr << std::dec << std::endl;
   if (!malloc_outfile.good()) {
-    debug_log << "Error: Failed to write to malloc trace file" << std::endl;
+    DEBUG_LOG("Error: Failed to write to malloc trace file");
   }
   
   curr_instr = {};
@@ -294,7 +324,7 @@ VOID CallocBefore(ADDRINT nmemb, ADDRINT size, ADDRINT ip)
 {
   malloc_outfile << "CALLOC_SIZE " << nmemb << " " << size << std::endl;
   if (!malloc_outfile.good()) {
-    debug_log << "Error: Failed to write to malloc trace file" << std::endl;
+    DEBUG_LOG("Error: Failed to write to malloc trace file");
   }
   
   trace_instr_format_t instr = {};
@@ -308,7 +338,7 @@ VOID CallocAfter(ADDRINT ret)
 {
   malloc_outfile << "CALLOC_RET 0x" << std::hex << ret << std::dec << std::endl;
   if (!malloc_outfile.good()) {
-    debug_log << "Error: Failed to write to malloc trace file" << std::endl;
+    DEBUG_LOG("Error: Failed to write to malloc trace file");
   }
   
   if (!malloc_traces.empty()) {
@@ -317,7 +347,7 @@ VOID CallocAfter(ADDRINT ret)
     WriteCurrentInstruction(); // Writes to ALL segment files for calloc
     malloc_traces.pop_back();
   } else {
-    debug_log << "Warning: CallocAfter called without matching CallocBefore" << std::endl;
+    DEBUG_LOG("Warning: CallocAfter called without matching CallocBefore");
   }
 }
 
@@ -325,7 +355,7 @@ VOID ReallocBefore(ADDRINT ptr, ADDRINT size, ADDRINT ip)
 {
   malloc_outfile << "REALLOC_SIZE" << std::dec << " " << size << " REALLOC_PTR 0x" << std::hex << ptr << std::dec << std::endl;
   if (!malloc_outfile.good()) {
-    debug_log << "Error: Failed to write to malloc trace file" << std::endl;
+    DEBUG_LOG("Error: Failed to write to malloc trace file");
   }
   
   trace_instr_format_t instr = {};
@@ -340,7 +370,7 @@ VOID ReallocAfter(ADDRINT ret)
 {
   malloc_outfile << "REALLOC_RET 0x" << std::hex << ret << std::dec << std::endl;
   if (!malloc_outfile.good()) {
-    debug_log << "Error: Failed to write to malloc trace file" << std::endl;
+    DEBUG_LOG("Error: Failed to write to malloc trace file");
   }
   
   if (!malloc_traces.empty()) {
@@ -349,7 +379,7 @@ VOID ReallocAfter(ADDRINT ret)
     WriteCurrentInstruction(); // Writes to ALL segment files for realloc
     malloc_traces.pop_back();
   } else {
-    debug_log << "Warning: ReallocAfter called without matching ReallocBefore" << std::endl;
+    DEBUG_LOG("Warning: ReallocAfter called without matching ReallocBefore");
   }
 }
 
@@ -390,19 +420,54 @@ void WriteCurrentInstruction()
     WriteMallocToAllSegments(curr_instr);
   } else {
     // Regular instruction: write only to current segment buffer
-    if (currentSegmentIndex > 0 && currentSegmentIndex <= segmentFiles.size()) {
+    
+    // Defensive check: Validate currentSegmentIndex bounds
+    if (currentSegmentIndex == 0) {
+      DEBUG_LOG("Warning: WriteCurrentInstruction called before any segment is active (currentSegmentIndex=0)");
+      return;
+    }
+    
+    if (currentSegmentIndex > segmentFiles.size()) {
+      DEBUG_LOG("Error: currentSegmentIndex (" << currentSegmentIndex 
+                << ") exceeds segmentFiles size (" << segmentFiles.size() << ")");
+      return;
+    }
+    
+    // Defensive check: Validate file pointer
+    size_t fileIndex = currentSegmentIndex - 1;
+    if (segmentFiles[fileIndex] == nullptr) {
+      DEBUG_LOG("Error: segmentFiles[" << fileIndex << "] is null pointer");
+      return;
+    }
+    
+    if (!segmentFiles[fileIndex]->is_open()) {
+      DEBUG_LOG("Error: segmentFiles[" << fileIndex << "] is not open");
+      return;
+    }
+    
+    // Safe to proceed with buffering
+    try {
       instr_buffer.push_back(curr_instr);
-      
-      // When buffer is full, flush to current segment file only
-      if (instr_buffer.size() * sizeof(trace_instr_format_t) >= INSTR_BUFFER_SIZE) {
-        segmentFiles[currentSegmentIndex - 1]->write(
+    } catch (const std::exception& e) {
+      DEBUG_LOG("Error: Failed to add instruction to buffer: " << e.what());
+      return;
+    }
+    
+    // When buffer is full, flush to current segment file only
+    if (instr_buffer.size() * sizeof(trace_instr_format_t) >= INSTR_BUFFER_SIZE) {
+      try {
+        segmentFiles[fileIndex]->write(
             reinterpret_cast<const char*>(&instr_buffer[0]), 
             instr_buffer.size() * sizeof(trace_instr_format_t));
-        if (!segmentFiles[currentSegmentIndex - 1]->good()) {
-          debug_log << "Error: Failed to write instruction buffer to segment " 
-                    << (currentSegmentIndex - 1) << std::endl;
+        
+        if (!segmentFiles[fileIndex]->good()) {
+          DEBUG_LOG("Error: Failed to write instruction buffer to segment " << fileIndex);
         }
         instr_buffer.clear();
+      } catch (const std::exception& e) {
+        DEBUG_LOG("Error: Exception during buffer flush to segment " 
+                  << fileIndex << ": " << e.what());
+        // Don't clear buffer on error to preserve data
       }
     }
   }
@@ -421,7 +486,7 @@ void WriteToSet(T* begin, T* end, UINT32 r)
   
   // Check if array is full (no zero terminator found)
   if (set_end == end) {
-    debug_log << "Warning: Register/memory operand array is full, dropping operand " << r << std::endl;
+    DEBUG_LOG("Warning: Register/memory operand array is full, dropping operand " << r);
     return; // Prevent out-of-bounds write
   }
   
@@ -528,12 +593,12 @@ VOID Instruction(INS ins, VOID* v)
  *                              PIN_AddFiniFunction function call
  */
 VOID Fini(INT32 code, VOID* v) {
-  debug_log << "Fini callback called with exit code: " << code << std::endl;
+  DEBUG_LOG("Fini callback called with exit code: " << code);
   
   // Flush any remaining pending malloc traces to ALL segment files
   if (!malloc_traces.empty()) {
-    debug_log << "Warning: Flushing " << malloc_traces.size() 
-              << " incomplete malloc traces at program exit" << std::endl;
+    DEBUG_LOG("Warning: Flushing " << malloc_traces.size() 
+              << " incomplete malloc traces at program exit");
     // Write incomplete malloc instructions to ALL segment files
     for (auto& pending_instr : malloc_traces) {
       WriteMallocToAllSegments(pending_instr);
@@ -543,25 +608,42 @@ VOID Fini(INT32 code, VOID* v) {
   
   // Flush instruction buffers for all segments
   if (!instr_buffer.empty() && currentSegmentIndex > 0 && currentSegmentIndex <= segmentFiles.size()) {
-    segmentFiles[currentSegmentIndex - 1]->write(
-        reinterpret_cast<const char*>(&instr_buffer[0]), 
-        instr_buffer.size() * sizeof(trace_instr_format_t));
-    if (!segmentFiles[currentSegmentIndex - 1]->good()) {
-      debug_log << "Error: Failed to write final instruction buffer to segment " 
-                << (currentSegmentIndex - 1) << std::endl;
+    // Defensive check: validate file pointer before writing
+    size_t fileIndex = currentSegmentIndex - 1;
+    if (segmentFiles[fileIndex] != nullptr && segmentFiles[fileIndex]->is_open()) {
+      try {
+        segmentFiles[fileIndex]->write(
+            reinterpret_cast<const char*>(&instr_buffer[0]), 
+            instr_buffer.size() * sizeof(trace_instr_format_t));
+        if (!segmentFiles[fileIndex]->good()) {
+          DEBUG_LOG("Error: Failed to write final instruction buffer to segment " << fileIndex);
+        }
+        instr_buffer.clear();
+      } catch (const std::exception& e) {
+        DEBUG_LOG("Error: Exception during final buffer flush: " << e.what());
+      }
+    } else {
+      DEBUG_LOG("Warning: Cannot flush final buffer, segment file is null or not open");
     }
-    instr_buffer.clear();
   }
   
   // Close all segment files
   for (size_t i = 0; i < segmentFiles.size(); i++) {
-    if (segmentFiles[i]->is_open()) {
-      segmentFiles[i]->close();
-      if (!segmentFiles[i]->good()) {
-        debug_log << "Error: Failed to properly close segment file " << i << std::endl;
+    // Defensive check: validate pointer before access
+    if (segmentFiles[i] != nullptr) {
+      if (segmentFiles[i]->is_open()) {
+        try {
+          segmentFiles[i]->close();
+          if (!segmentFiles[i]->good()) {
+            DEBUG_LOG("Error: Failed to properly close segment file " << i);
+          }
+        } catch (const std::exception& e) {
+          DEBUG_LOG("Error: Exception closing segment file " << i << ": " << e.what());
+        }
       }
+      delete segmentFiles[i];
+      segmentFiles[i] = nullptr; // Prevent dangling pointer
     }
-    delete segmentFiles[i];
   }
   segmentFiles.clear();
   
@@ -569,17 +651,17 @@ VOID Fini(INT32 code, VOID* v) {
   if (malloc_outfile.is_open()) {
     malloc_outfile.close();
     if (!malloc_outfile.good()) {
-      debug_log << "Error: Failed to properly close malloc trace file" << std::endl;
+      DEBUG_LOG("Error: Failed to properly close malloc trace file");
     }
   }
   
   if (useSimpointMode) {
-    debug_log << "Simpoint tracing completed. Generated " 
+    DEBUG_LOG("Simpoint tracing completed. Generated " 
               << segmentFileNames.size() 
-              << " segment trace files." << std::endl;
+              << " segment trace files.");
   }
   
-  debug_log << "All files closed successfully" << std::endl;
+  DEBUG_LOG("All files closed successfully");
   debug_log.close();
 }
 
@@ -603,7 +685,13 @@ int main(int argc, char* argv[])
   if (!debug_log) {
     std::cerr << "Warning: Cannot open debug log file, using stderr" << std::endl;
   } else {
-    debug_log << "ChampSim tracer started at instruction count: 0" << std::endl;
+    // Initialize debug logging flag from command line
+    enableDebugLog = KnobEnableDebug.Value();
+    if (enableDebugLog) {
+      debug_log << "ChampSim tracer started at instruction count: 0 (DEBUG MODE ENABLED)" << std::endl;
+    } else {
+      debug_log << "ChampSim tracer started at instruction count: 0 (DEBUG MODE DISABLED for performance)" << std::endl;
+    }
   }
 
   // Check if simpoint mode is enabled
@@ -612,30 +700,43 @@ int main(int argc, char* argv[])
     
     // Read simpoint file and initialize segments
     if (!ReadSimpointFile(KnobSimpointFile.Value(), KnobOutputFile.Value())) {
-      debug_log << "Error: Failed to initialize simpoint mode" << std::endl;
+      DEBUG_LOG("Error: Failed to initialize simpoint mode");
       exit(1);
     }
     
     // Open ALL segment files at initialization
     if (!OpenAllSegmentFiles()) {
-      debug_log << "Error: Failed to open segment files" << std::endl;
+      DEBUG_LOG("Error: Failed to open segment files");
       exit(1);
     }
     
-    debug_log << "Simpoint mode enabled. All " << segmentFiles.size() 
-              << " segment files opened." << std::endl;
+    DEBUG_LOG("Simpoint mode enabled. All " << segmentFiles.size() 
+              << " segment files opened.");
   } else {
     // Original non-simpoint mode: open single output file
     std::ofstream* singleFile = new std::ofstream();
     singleFile->open(KnobOutputFile.Value().c_str(), std::ios_base::binary | std::ios_base::trunc);
     if (!singleFile->is_open()) {
-      debug_log << "Couldn't open output trace file. Exiting." << std::endl;
+      DEBUG_LOG("Couldn't open output trace file. Exiting.");
+      
+      // Clean up any previously opened segment files (should be empty in this branch, but be safe)
+      for (size_t i = 0; i < segmentFiles.size(); i++) {
+        if (segmentFiles[i] != nullptr) {
+          if (segmentFiles[i]->is_open()) {
+            segmentFiles[i]->close();
+          }
+          delete segmentFiles[i];
+          segmentFiles[i] = nullptr;
+        }
+      }
+      segmentFiles.clear();
+      
       delete singleFile;
       exit(1);
     }
     segmentFiles.push_back(singleFile);
     currentSegmentIndex = 1; // Mark as active (1-based indexing)
-    debug_log << "Opened single output file: " << KnobOutputFile.Value() << std::endl;
+    DEBUG_LOG("Opened single output file: " << KnobOutputFile.Value());
   }
 
   // Pre-allocate instruction buffer capacity to avoid frequent reallocation
@@ -644,10 +745,23 @@ int main(int argc, char* argv[])
   // Open malloc trace file
   malloc_outfile.open(KnobMallocOutputFile.Value().c_str(), std::ios_base::out);
   if (!malloc_outfile) {
-    debug_log << "Couldn't open malloc trace file. Exiting." << std::endl;
+    DEBUG_LOG("Couldn't open malloc trace file. Exiting.");
+    
+    // Clean up segment files before exiting
+    for (size_t i = 0; i < segmentFiles.size(); i++) {
+      if (segmentFiles[i] != nullptr) {
+        if (segmentFiles[i]->is_open()) {
+          segmentFiles[i]->close();
+        }
+        delete segmentFiles[i];
+        segmentFiles[i] = nullptr;
+      }
+    }
+    segmentFiles.clear();
+    
     exit(1);
   }
-  debug_log << "Opened malloc trace file: " << KnobMallocOutputFile.Value() << std::endl;
+  DEBUG_LOG("Opened malloc trace file: " << KnobMallocOutputFile.Value());
 
   // Register function to be called to instrument instructions
   INS_AddInstrumentFunction(Instruction, 0);
@@ -658,10 +772,10 @@ int main(int argc, char* argv[])
   // Register function to be called when the application exits
   PIN_AddFiniFunction(Fini, 0);
 
-  debug_log << "All instrumentation registered, starting program" << std::endl;
+  DEBUG_LOG("All instrumentation registered, starting program");
 
   // Start the program, never returns
   PIN_StartProgram();
 
   return 0;
-std::vector<std::ofstream*> segmentFiles;  // ✅ Multiple files - NEW implementationstd::vector<std::ofstream*> segmentFiles;  // ✅ Multiple files - NEW implementation}
+}
