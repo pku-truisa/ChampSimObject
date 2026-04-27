@@ -206,34 +206,22 @@ BOOL OpenAllSegmentFiles()
   return TRUE;
 }
 
+
+/* ===================================================================== */
+// Analysis routines
+/* ===================================================================== */
+
 /*!
  *  Write malloc/calloc/realloc/free instruction to ALL segment files
  */
 VOID WriteMallocToAllSegments(const trace_instr_format_t& instr)
 {
   for (size_t i = 0; i < segmentFiles.size(); i++) {
-    // Defensive check: validate file pointer before access
-    if (segmentFiles[i] == nullptr) {
-      DEBUG_LOG("Warning: segmentFiles[" << i << "] is null pointer, skipping");
-      continue;
-    }
-    
-    if (segmentFiles[i]->is_open()) {
-      try {
-        segmentFiles[i]->write(reinterpret_cast<const char*>(&instr), 
-                              sizeof(trace_instr_format_t));
-        if (!segmentFiles[i]->good()) {
-          DEBUG_LOG("Error: Failed to write malloc instruction to segment " << i);
-        } else {
-          // Flush immediately to ensure data persistence for global events
-          segmentFiles[i]->flush();
-          if (!segmentFiles[i]->good()) {
-            DEBUG_LOG("Error: Failed to flush malloc instruction to segment " << i);
-          }
-        }
-      } catch (const std::exception& e) {
-        DEBUG_LOG("Error: Exception writing malloc to segment " << i << ": " << e.what());
-      }
+    segmentFiles[i]->write(reinterpret_cast<const char*>(&instr), 
+                          sizeof(trace_instr_format_t));
+    if (segmentFiles[i]->good()) {
+      // Flush immediately to ensure data persistence for global events
+      segmentFiles[i]->flush();
     }
   }
 }
@@ -243,36 +231,18 @@ VOID WriteMallocToAllSegments(const trace_instr_format_t& instr)
  */
 VOID SwitchToNextSegment()
 {
-  if (currentSegmentIndex >= segmentFiles.size()) {
-    return; // No more segments
+  // Critical safety check: prevent array underflow and out-of-bounds access
+  if (currentSegmentIndex == 0 || currentSegmentIndex >= segmentFiles.size()) {
+    return;
   }
   
   // Flush current segment buffer before switching
   // This ensures all instructions (including malloc) are written in correct order
-  if (!instr_buffer.empty() && currentSegmentIndex > 0 && currentSegmentIndex <= segmentFiles.size()) {
-    // Defensive check: validate file pointer before writing
-    size_t fileIndex = currentSegmentIndex - 1;
-    if (segmentFiles[fileIndex] != nullptr && segmentFiles[fileIndex]->is_open()) {
-      try {
-        segmentFiles[fileIndex]->write(
-            reinterpret_cast<const char*>(&instr_buffer[0]), 
-            instr_buffer.size() * sizeof(trace_instr_format_t));
-        if (!segmentFiles[fileIndex]->good()) {
-          DEBUG_LOG("Error: Failed to flush buffer for segment " << fileIndex);
-        }
-      } catch (const std::exception& e) {
-        DEBUG_LOG("Error: Exception flushing buffer for segment " << fileIndex << ": " << e.what());
-      }
-    } else {
-      DEBUG_LOG("Warning: Cannot flush buffer, segment file " << fileIndex 
-                << " is null or not open");
-    }
-    instr_buffer.clear();
-  }
-  
-  // Log before incrementing to avoid out-of-bounds access
-  DEBUG_LOG("Switched to segment " << currentSegmentIndex 
-            << ": " << segmentFileNames[currentSegmentIndex - 1]);
+  size_t fileIndex = currentSegmentIndex - 1;
+  segmentFiles[fileIndex]->write(
+      reinterpret_cast<const char*>(&instr_buffer[0]), 
+      instr_buffer.size() * sizeof(trace_instr_format_t));
+  instr_buffer.clear();
   
   currentSegmentIndex++;
 }
@@ -288,125 +258,6 @@ BOOL ShouldSwitchSegment()
   
   // Check if we've reached the start of the next segment
   return instrCount >= simpointSegments[currentSegmentIndex];
-}
-
-/* ===================================================================== */
-// Analysis routines
-/* ===================================================================== */
-
-// Malloc tracking functions
-VOID MallocBefore(ADDRINT size, ADDRINT ip)
-{
-  malloc_outfile << "MALLOC_SIZE " << size << std::endl;
-  if (!malloc_outfile.good()) {
-    DEBUG_LOG("Error: Failed to write to malloc trace file");
-  }
-  
-  trace_instr_format_t instr = {};
-  instr.ip = (unsigned long long int)ip;
-  instr.is_malloc = 1; // 1: malloc
-  instr.source_memory[0] = size;
-  malloc_traces.push_back(instr);
-}
-
-VOID MallocAfter(ADDRINT ret)
-{
-  malloc_outfile << "MALLOC_RET 0x" << std::hex << ret << std::dec << std::endl;
-  if (!malloc_outfile.good()) {
-    DEBUG_LOG("Error: Failed to write to malloc trace file");
-  }
-  
-  if (!malloc_traces.empty()) {
-    curr_instr = malloc_traces.back();
-    curr_instr.destination_memory[0] = ret;
-    WriteCurrentInstruction(); // Writes to ALL segment files for malloc
-    malloc_traces.pop_back();
-  } else {
-    DEBUG_LOG("Warning: MallocAfter called without matching MallocBefore");
-  }
-}
-
-VOID FreeBefore(ADDRINT ptr, ADDRINT ip)
-{
-  malloc_outfile << "FREE 0x" << std::hex << ptr << std::dec << std::endl;
-  if (!malloc_outfile.good()) {
-    DEBUG_LOG("Error: Failed to write to malloc trace file");
-  }
-  
-  curr_instr = {};
-  curr_instr.ip = (unsigned long long int)ip;
-  curr_instr.is_malloc = 4; // 4: free
-  curr_instr.source_memory[0] = ptr;
-  WriteCurrentInstruction(); // Writes to ALL segment files for free
-}
-
-VOID CallocBefore(ADDRINT nmemb, ADDRINT size, ADDRINT ip)
-{
-  malloc_outfile << "CALLOC_SIZE " << nmemb << " " << size << std::endl;
-  if (!malloc_outfile.good()) {
-    DEBUG_LOG("Error: Failed to write to malloc trace file");
-  }
-  
-  trace_instr_format_t instr = {};
-  instr.ip = (unsigned long long int)ip;
-  instr.is_malloc = 2; // 2: calloc
-  instr.source_memory[0] = nmemb * size;
-  malloc_traces.push_back(instr);
-}
-
-VOID CallocAfter(ADDRINT ret)
-{
-  malloc_outfile << "CALLOC_RET 0x" << std::hex << ret << std::dec << std::endl;
-  if (!malloc_outfile.good()) {
-    DEBUG_LOG("Error: Failed to write to malloc trace file");
-  }
-  
-  if (!malloc_traces.empty()) {
-    curr_instr = malloc_traces.back();
-    curr_instr.destination_memory[0] = ret;
-    WriteCurrentInstruction(); // Writes to ALL segment files for calloc
-    malloc_traces.pop_back();
-  } else {
-    DEBUG_LOG("Warning: CallocAfter called without matching CallocBefore");
-  }
-}
-
-VOID ReallocBefore(ADDRINT ptr, ADDRINT size, ADDRINT ip)
-{
-  malloc_outfile << "REALLOC_SIZE" << std::dec << " " << size << " REALLOC_PTR 0x" << std::hex << ptr << std::dec << std::endl;
-  if (!malloc_outfile.good()) {
-    DEBUG_LOG("Error: Failed to write to malloc trace file");
-  }
-  
-  trace_instr_format_t instr = {};
-  instr.ip = (unsigned long long int)ip;
-  instr.is_malloc = 3; // 3: realloc
-  instr.source_memory[0] = size;
-  instr.source_memory[1] = ptr;
-  malloc_traces.push_back(instr);
-}
-
-VOID ReallocAfter(ADDRINT ret)
-{
-  malloc_outfile << "REALLOC_RET 0x" << std::hex << ret << std::dec << std::endl;
-  if (!malloc_outfile.good()) {
-    DEBUG_LOG("Error: Failed to write to malloc trace file");
-  }
-  
-  if (!malloc_traces.empty()) {
-    curr_instr = malloc_traces.back();
-    curr_instr.destination_memory[0] = ret;
-    WriteCurrentInstruction(); // Writes to ALL segment files for realloc
-    malloc_traces.pop_back();
-  } else {
-    DEBUG_LOG("Warning: ReallocAfter called without matching ReallocBefore");
-  }
-}
-
-void ResetCurrentInstruction(VOID* ip)
-{
-  curr_instr = {};
-  curr_instr.ip = (unsigned long long int)ip;
 }
 
 BOOL ShouldWrite()
@@ -437,37 +288,15 @@ void WriteCurrentInstruction()
   // ALL instructions (including malloc) go to buffer for current segment
   // This ensures correct ordering within the current segment
   
-  // Defensive check: Validate currentSegmentIndex bounds
+  // Critical safety check: prevent array underflow
   if (currentSegmentIndex == 0) {
-    DEBUG_LOG("Warning: WriteCurrentInstruction called before any segment is active (currentSegmentIndex=0)");
     return;
   }
   
-  if (currentSegmentIndex > segmentFiles.size()) {
-    DEBUG_LOG("Error: currentSegmentIndex (" << currentSegmentIndex 
-              << ") exceeds segmentFiles size (" << segmentFiles.size() << ")");
-    return;
-  }
-  
-  // Defensive check: Validate file pointer
   size_t fileIndex = currentSegmentIndex - 1;
-  if (segmentFiles[fileIndex] == nullptr) {
-    DEBUG_LOG("Error: segmentFiles[" << fileIndex << "] is null pointer");
-    return;
-  }
-  
-  if (!segmentFiles[fileIndex]->is_open()) {
-    DEBUG_LOG("Error: segmentFiles[" << fileIndex << "] is not open");
-    return;
-  }
   
   // Safe to proceed with buffering - ALL instructions use buffer
-  try {
-    instr_buffer.push_back(curr_instr);
-  } catch (const std::exception& e) {
-    DEBUG_LOG("Error: Failed to add instruction to buffer: " << e.what());
-    return;
-  }
+  instr_buffer.push_back(curr_instr);
   
   // For malloc/calloc/realloc/free instructions, also write to ALL other segment files immediately
   // This ensures each trace file contains complete memory operation history
@@ -478,47 +307,23 @@ void WriteCurrentInstruction()
         continue; // Skip current segment file (already buffered)
       }
       
-      // Defensive check: validate file pointer before access
-      if (segmentFiles[i] == nullptr) {
-        DEBUG_LOG("Warning: segmentFiles[" << i << "] is null pointer, skipping malloc broadcast");
-        continue;
-      }
-      
-      if (segmentFiles[i]->is_open()) {
-        try {
-          segmentFiles[i]->write(reinterpret_cast<const char*>(&curr_instr), 
-                                sizeof(trace_instr_format_t));
-          if (!segmentFiles[i]->good()) {
-            DEBUG_LOG("Error: Failed to write malloc instruction to segment " << i);
-          } else {
-            // Flush immediately to ensure data persistence for global events
-            segmentFiles[i]->flush();
-            if (!segmentFiles[i]->good()) {
-              DEBUG_LOG("Error: Failed to flush malloc instruction to segment " << i);
-            }
-          }
-        } catch (const std::exception& e) {
-          DEBUG_LOG("Error: Exception writing malloc to segment " << i << ": " << e.what());
-        }
+      segmentFiles[i]->write(reinterpret_cast<const char*>(&curr_instr), 
+                            sizeof(trace_instr_format_t));
+      if (segmentFiles[i]->good()) {
+        // Flush immediately to ensure data persistence for global events
+        segmentFiles[i]->flush();
       }
     }
   }
   
   // When buffer is full, flush to current segment file only
   if (instr_buffer.size() * sizeof(trace_instr_format_t) >= INSTR_BUFFER_SIZE) {
-    try {
-      segmentFiles[fileIndex]->write(
-          reinterpret_cast<const char*>(&instr_buffer[0]), 
-          instr_buffer.size() * sizeof(trace_instr_format_t));
-      
-      if (!segmentFiles[fileIndex]->good()) {
-        DEBUG_LOG("Error: Failed to write instruction buffer to segment " << fileIndex);
-      }
+    segmentFiles[fileIndex]->write(
+        reinterpret_cast<const char*>(&instr_buffer[0]), 
+        instr_buffer.size() * sizeof(trace_instr_format_t));
+    
+    if (segmentFiles[fileIndex]->good()) {
       instr_buffer.clear();
-    } catch (const std::exception& e) {
-      DEBUG_LOG("Error: Exception during buffer flush to segment " 
-                << fileIndex << ": " << e.what());
-      // Don't clear buffer on error to preserve data
     }
   }
 }
@@ -536,12 +341,99 @@ void WriteToSet(T* begin, T* end, UINT32 r)
   
   // Check if array is full (no zero terminator found)
   if (set_end == end) {
-    DEBUG_LOG("Warning: Register/memory operand array is full, dropping operand " << r);
     return; // Prevent out-of-bounds write
   }
   
   auto found_reg = std::find(begin, set_end, r); // check to see if this register is already in the list
   *found_reg = r;
+}
+
+// Malloc tracking functions
+VOID MallocBefore(ADDRINT size, ADDRINT ip)
+{
+  malloc_outfile << "MALLOC_SIZE " << size << std::endl;
+  
+  trace_instr_format_t instr = {};
+  instr.ip = (unsigned long long int)ip;
+  instr.is_malloc = 1; // 1: malloc
+  instr.source_memory[0] = size;
+  malloc_traces.push_back(instr);
+}
+
+VOID MallocAfter(ADDRINT ret)
+{
+  malloc_outfile << "MALLOC_RET 0x" << std::hex << ret << std::dec << std::endl;
+  
+  if (!malloc_traces.empty()) {
+    curr_instr = malloc_traces.back();
+    curr_instr.destination_memory[0] = ret;
+    WriteCurrentInstruction(); // Writes to ALL segment files for malloc
+    malloc_traces.pop_back();
+  }
+}
+
+VOID FreeBefore(ADDRINT ptr, ADDRINT ip)
+{
+  malloc_outfile << "FREE 0x" << std::hex << ptr << std::dec << std::endl;
+  
+  curr_instr = {};
+  curr_instr.ip = (unsigned long long int)ip;
+  curr_instr.is_malloc = 4; // 4: free
+  curr_instr.source_memory[0] = ptr;
+  WriteCurrentInstruction(); // Writes to ALL segment files for free
+}
+
+VOID CallocBefore(ADDRINT nmemb, ADDRINT size, ADDRINT ip)
+{
+  malloc_outfile << "CALLOC_SIZE " << nmemb << " " << size << std::endl;
+  
+  trace_instr_format_t instr = {};
+  instr.ip = (unsigned long long int)ip;
+  instr.is_malloc = 2; // 2: calloc
+  instr.source_memory[0] = nmemb * size;
+  malloc_traces.push_back(instr);
+}
+
+VOID CallocAfter(ADDRINT ret)
+{
+  malloc_outfile << "CALLOC_RET 0x" << std::hex << ret << std::dec << std::endl;
+  
+  if (!malloc_traces.empty()) {
+    curr_instr = malloc_traces.back();
+    curr_instr.destination_memory[0] = ret;
+    WriteCurrentInstruction(); // Writes to ALL segment files for calloc
+    malloc_traces.pop_back();
+  }
+}
+
+VOID ReallocBefore(ADDRINT ptr, ADDRINT size, ADDRINT ip)
+{
+  malloc_outfile << "REALLOC_SIZE" << std::dec << " " << size << " REALLOC_PTR 0x" << std::hex << ptr << std::dec << std::endl;
+  
+  trace_instr_format_t instr = {};
+  instr.ip = (unsigned long long int)ip;
+  instr.is_malloc = 3; // 3: realloc
+  instr.source_memory[0] = size;
+  instr.source_memory[1] = ptr;
+  malloc_traces.push_back(instr);
+}
+
+VOID ReallocAfter(ADDRINT ret)
+{
+  malloc_outfile << "REALLOC_RET 0x" << std::hex << ret << std::dec << std::endl;
+  
+  if (!malloc_traces.empty()) {
+    curr_instr = malloc_traces.back();
+    curr_instr.destination_memory[0] = ret;
+    WriteCurrentInstruction(); // Writes to ALL segment files for realloc
+    malloc_traces.pop_back();
+  }
+}
+
+void ResetCurrentInstruction(VOID* ip)
+{
+  curr_instr = {};
+  curr_instr.ip = (unsigned long long int)ip;
 }
 
 /* ===================================================================== */
@@ -659,38 +551,22 @@ VOID Fini(INT32 code, VOID* v) {
   // Flush instruction buffer for current segment
   // This ensures all instructions (including malloc) are written in correct order
   if (!instr_buffer.empty() && currentSegmentIndex > 0 && currentSegmentIndex <= segmentFiles.size()) {
-    // Defensive check: validate file pointer before writing
     size_t fileIndex = currentSegmentIndex - 1;
-    if (segmentFiles[fileIndex] != nullptr && segmentFiles[fileIndex]->is_open()) {
-      try {
-        segmentFiles[fileIndex]->write(
-            reinterpret_cast<const char*>(&instr_buffer[0]), 
-            instr_buffer.size() * sizeof(trace_instr_format_t));
-        if (!segmentFiles[fileIndex]->good()) {
-          DEBUG_LOG("Error: Failed to write final instruction buffer to segment " << fileIndex);
-        }
-        instr_buffer.clear();
-      } catch (const std::exception& e) {
-        DEBUG_LOG("Error: Exception during final buffer flush: " << e.what());
-      }
+    segmentFiles[fileIndex]->write(
+        reinterpret_cast<const char*>(&instr_buffer[0]), 
+        instr_buffer.size() * sizeof(trace_instr_format_t));
+    if (segmentFiles[fileIndex]->good()) {
+      instr_buffer.clear();
     } else {
-      DEBUG_LOG("Warning: Cannot flush final buffer, segment file is null or not open");
+      DEBUG_LOG("Error: Failed to write final instruction buffer to segment " << fileIndex);
     }
   }
   
   // Close all segment files
   for (size_t i = 0; i < segmentFiles.size(); i++) {
-    // Defensive check: validate pointer before access
     if (segmentFiles[i] != nullptr) {
       if (segmentFiles[i]->is_open()) {
-        try {
-          segmentFiles[i]->close();
-          if (!segmentFiles[i]->good()) {
-            DEBUG_LOG("Error: Failed to properly close segment file " << i);
-          }
-        } catch (const std::exception& e) {
-          DEBUG_LOG("Error: Exception closing segment file " << i << ": " << e.what());
-        }
+        segmentFiles[i]->close();
       }
       delete segmentFiles[i];
       segmentFiles[i] = nullptr; // Prevent dangling pointer
@@ -701,9 +577,6 @@ VOID Fini(INT32 code, VOID* v) {
   // Close malloc trace file
   if (malloc_outfile.is_open()) {
     malloc_outfile.close();
-    if (!malloc_outfile.good()) {
-      DEBUG_LOG("Error: Failed to properly close malloc trace file");
-    }
   }
   
   if (useSimpointMode) {
