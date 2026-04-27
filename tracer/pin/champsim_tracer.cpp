@@ -224,6 +224,12 @@ VOID WriteMallocToAllSegments(const trace_instr_format_t& instr)
                               sizeof(trace_instr_format_t));
         if (!segmentFiles[i]->good()) {
           DEBUG_LOG("Error: Failed to write malloc instruction to segment " << i);
+        } else {
+          // Flush immediately to ensure data persistence for global events
+          segmentFiles[i]->flush();
+          if (!segmentFiles[i]->good()) {
+            DEBUG_LOG("Error: Failed to flush malloc instruction to segment " << i);
+          }
         }
       } catch (const std::exception& e) {
         DEBUG_LOG("Error: Exception writing malloc to segment " << i << ": " << e.what());
@@ -461,6 +467,41 @@ void WriteCurrentInstruction()
   } catch (const std::exception& e) {
     DEBUG_LOG("Error: Failed to add instruction to buffer: " << e.what());
     return;
+  }
+  
+  // For malloc/calloc/realloc/free instructions, also write to ALL other segment files immediately
+  // This ensures each trace file contains complete memory operation history
+  if (curr_instr.is_malloc != 0) {
+    // Write to all OTHER segment files (not the current one, as it's already in the buffer)
+    for (size_t i = 0; i < segmentFiles.size(); i++) {
+      if (i == fileIndex) {
+        continue; // Skip current segment file (already buffered)
+      }
+      
+      // Defensive check: validate file pointer before access
+      if (segmentFiles[i] == nullptr) {
+        DEBUG_LOG("Warning: segmentFiles[" << i << "] is null pointer, skipping malloc broadcast");
+        continue;
+      }
+      
+      if (segmentFiles[i]->is_open()) {
+        try {
+          segmentFiles[i]->write(reinterpret_cast<const char*>(&curr_instr), 
+                                sizeof(trace_instr_format_t));
+          if (!segmentFiles[i]->good()) {
+            DEBUG_LOG("Error: Failed to write malloc instruction to segment " << i);
+          } else {
+            // Flush immediately to ensure data persistence for global events
+            segmentFiles[i]->flush();
+            if (!segmentFiles[i]->good()) {
+              DEBUG_LOG("Error: Failed to flush malloc instruction to segment " << i);
+            }
+          }
+        } catch (const std::exception& e) {
+          DEBUG_LOG("Error: Exception writing malloc to segment " << i << ": " << e.what());
+        }
+      }
+    }
   }
   
   // When buffer is full, flush to current segment file only
